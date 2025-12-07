@@ -1,8 +1,9 @@
 package com.markovai.server.ai;
 
 import org.junit.jupiter.api.Test;
-//import java.util.Collections;
+import java.util.Collections;
 import static org.junit.jupiter.api.Assertions.*;
+import com.markovai.server.ai.PatchSequenceExtractor;
 
 class DigitMarkovModelTest {
 
@@ -11,21 +12,24 @@ class DigitMarkovModelTest {
         int[][] pixels = new int[28][28];
         pixels[0][0] = 200; // should be 1
         pixels[0][1] = 50; // should be 0
+        // Patch (0,0) covers pixels (0,0), (0,1), (1,0), (1,1).
+        // If (0,0)=1, (0,1)=0, (1,0)=0, (1,1)=0 -> Code = 8*1 + 4*0 + 2*0 + 1*0 = 8.
 
         int[][] binary = DigitMarkovModel.binarize(pixels, 128);
         assertEquals(1, binary[0][0]);
         assertEquals(0, binary[0][1]);
 
-        PixelSequenceExtractor extractor = new PixelSequenceExtractor();
-        int[] flat = extractor.extractSequence(binary);
-        assertEquals(1, flat[0]);
-        assertEquals(0, flat[1]);
-        assertEquals(28 * 28, flat.length);
+        PatchSequenceExtractor extractor = new PatchSequenceExtractor();
+        int[] seq = extractor.extractSequence(binary);
+        // First patch (0,0) -> bit pattern 1000 = 8
+        assertEquals(8, seq[0]);
+        assertEquals(14 * 14, seq.length);
     }
 
     @Test
     void testTrainingAndClassification() {
-        DigitMarkovModel model = new DigitMarkovModel(new PixelSequenceExtractor());
+        // Use 16 states for patch model
+        DigitMarkovModel model = new DigitMarkovModel(16, new PatchSequenceExtractor());
 
         // Create a dummy "zero" image (A Box/Square loop)
         // Box from (5,5) to (20,20)

@@ -11,26 +11,33 @@ import java.util.List;
 public class DigitMarkovModel {
     private static final Logger logger = LoggerFactory.getLogger(DigitMarkovModel.class);
     private static final int NUM_DIGITS = 10;
-    private static final int NUM_STATES = 2; // 0 and 1
     private static final int IMAGE_SIZE = 28;
-    private static final int SEQ_LENGTH = IMAGE_SIZE * IMAGE_SIZE;
+
+    private final int numStates;
+    private final SequenceExtractor extractor;
 
     // counts and probabilities for each digit 0..9
     // [digit][state]
-    private final long[][] initialCounts = new long[NUM_DIGITS][NUM_STATES];
+    private final long[][] initialCounts;
     // [digit][prevState][nextState]
-    private final long[][][] transitionCounts = new long[NUM_DIGITS][NUM_STATES][NUM_STATES];
+    private final long[][][] transitionCounts;
 
     // [digit][state]
-    private final double[][] initialProbs = new double[NUM_DIGITS][NUM_STATES];
+    private final double[][] initialProbs;
     // [digit][prevState][nextState]
-    private final double[][][] transitionProbs = new double[NUM_DIGITS][NUM_STATES][NUM_STATES];
+    private final double[][][] transitionProbs;
 
-    private final SequenceExtractor extractor;
-
-    public DigitMarkovModel(SequenceExtractor extractor) {
+    public DigitMarkovModel(int numStates, SequenceExtractor extractor) {
+        this.numStates = numStates;
         this.extractor = extractor;
-        logger.debug("Using extractor: {}", extractor.getClass().getSimpleName());
+
+        this.initialCounts = new long[NUM_DIGITS][numStates];
+        this.transitionCounts = new long[NUM_DIGITS][numStates][numStates];
+        this.initialProbs = new double[NUM_DIGITS][numStates];
+        this.transitionProbs = new double[NUM_DIGITS][numStates][numStates];
+
+        logger.info("Initializing DigitMarkovModel with {} states. Using extractor: {}", numStates,
+                extractor.getClass().getSimpleName());
     }
 
     /**
@@ -78,13 +85,17 @@ public class DigitMarkovModel {
             digitCounts[d]++;
 
             // Update initial state count
-            initialCounts[d][seq[0]]++;
+            if (seq[0] >= 0 && seq[0] < numStates) {
+                initialCounts[d][seq[0]]++;
+            }
 
             // Update transitions
-            for (int t = 1; t < SEQ_LENGTH; t++) {
+            for (int t = 1; t < seq.length; t++) {
                 int prev = seq[t - 1];
                 int cur = seq[t];
-                transitionCounts[d][prev][cur]++;
+                if (prev >= 0 && prev < numStates && cur >= 0 && cur < numStates) {
+                    transitionCounts[d][prev][cur]++;
+                }
             }
         }
 
@@ -100,30 +111,43 @@ public class DigitMarkovModel {
 
     private void finalizeProbabilities() {
         for (int d = 0; d < NUM_DIGITS; d++) {
-            // Initial probabilities with Laplace smoothing (+1 to counts, +2 to total)
-            long totalInit = initialCounts[d][0] + initialCounts[d][1] + 2;
-            initialProbs[d][0] = (double) (initialCounts[d][0] + 1) / totalInit;
-            initialProbs[d][1] = (double) (initialCounts[d][1] + 1) / totalInit;
+            // Initial probabilities: Calculate total count + smoothing mass
+            long totalInit = numStates; // Add '1' for each state (Laplace smoothing)
+            for (int s = 0; s < numStates; s++) {
+                totalInit += initialCounts[d][s];
+            }
+
+            for (int s = 0; s < numStates; s++) {
+                initialProbs[d][s] = (double) (initialCounts[d][s] + 1) / totalInit;
+            }
 
             // Transition probabilities
-            for (int prev = 0; prev < NUM_STATES; prev++) {
-                long totalTrans = transitionCounts[d][prev][0] + transitionCounts[d][prev][1] + 2;
-                transitionProbs[d][prev][0] = (double) (transitionCounts[d][prev][0] + 1) / totalTrans;
-                transitionProbs[d][prev][1] = (double) (transitionCounts[d][prev][1] + 1) / totalTrans;
+            for (int prev = 0; prev < numStates; prev++) {
+                long totalTrans = numStates; // Add '1' for each next state
+                for (int next = 0; next < numStates; next++) {
+                    totalTrans += transitionCounts[d][prev][next];
+                }
 
-                logger.trace("Digit {} transition {}->{}: count={}, prob={}", d, prev, 0, transitionCounts[d][prev][0],
-                        transitionProbs[d][prev][0]);
-                logger.trace("Digit {} transition {}->{}: count={}, prob={}", d, prev, 1, transitionCounts[d][prev][1],
-                        transitionProbs[d][prev][1]);
+                for (int next = 0; next < numStates; next++) {
+                    transitionProbs[d][prev][next] = (double) (transitionCounts[d][prev][next] + 1) / totalTrans;
+                }
+
+                if (logger.isTraceEnabled() && numStates <= 4) { // Only log full tables if small
+                    for (int next = 0; next < numStates; next++) {
+                        logger.trace("Digit {} transition {}->{}: count={}, prob={}", d, prev, next,
+                                transitionCounts[d][prev][next], transitionProbs[d][prev][next]);
+                    }
+                }
             }
         }
-        logger.debug("Probabilities finalized.");
+        logger.debug("Probabilities finalized for {} states.", numStates);
     }
 
     public double logLikelihood(int digit, int[] seq) {
-        if (seq.length != SEQ_LENGTH) {
-            throw new IllegalArgumentException("Sequence length must be " + SEQ_LENGTH);
-        }
+        // Removed hard seq length check as it varies by extractor
+
+        if (seq[0] < 0 || seq[0] >= numStates)
+            return Double.NEGATIVE_INFINITY; // Should not happen
 
         double p0 = initialProbs[digit][seq[0]];
         double logL = Math.log(p0);
@@ -131,8 +155,10 @@ public class DigitMarkovModel {
         for (int t = 1; t < seq.length; t++) {
             int prev = seq[t - 1];
             int cur = seq[t];
-            double p = transitionProbs[digit][prev][cur];
-            logL += Math.log(p);
+            if (prev >= 0 && prev < numStates && cur >= 0 && cur < numStates) {
+                double p = transitionProbs[digit][prev][cur];
+                logL += Math.log(p);
+            }
         }
         return logL;
     }
