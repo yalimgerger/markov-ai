@@ -16,7 +16,8 @@ class DigitMarkovModelTest {
         assertEquals(1, binary[0][0]);
         assertEquals(0, binary[0][1]);
 
-        int[] flat = DigitMarkovModel.flattenBinaryImage(binary);
+        PixelSequenceExtractor extractor = new PixelSequenceExtractor();
+        int[] flat = extractor.extractSequence(binary);
         assertEquals(1, flat[0]);
         assertEquals(0, flat[1]);
         assertEquals(28 * 28, flat.length);
@@ -24,7 +25,7 @@ class DigitMarkovModelTest {
 
     @Test
     void testTrainingAndClassification() {
-        DigitMarkovModel model = new DigitMarkovModel();
+        DigitMarkovModel model = new DigitMarkovModel(new PixelSequenceExtractor());
 
         // Create a dummy "zero" image (A Box/Square loop)
         // Box from (5,5) to (20,20)

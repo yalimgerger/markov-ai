@@ -26,6 +26,13 @@ public class DigitMarkovModel {
     // [digit][prevState][nextState]
     private final double[][][] transitionProbs = new double[NUM_DIGITS][NUM_STATES][NUM_STATES];
 
+    private final SequenceExtractor extractor;
+
+    public DigitMarkovModel(SequenceExtractor extractor) {
+        this.extractor = extractor;
+        logger.debug("Using extractor: {}", extractor.getClass().getSimpleName());
+    }
+
     /**
      * Helper to binarize a 28x28 grayscale image.
      * 
@@ -43,20 +50,6 @@ public class DigitMarkovModel {
         return binary;
     }
 
-    /**
-     * Flattens a 28x28 binary image into a 1D sequence.
-     */
-    public static int[] flattenBinaryImage(int[][] binaryPixels) {
-        int[] seq = new int[SEQ_LENGTH];
-        int idx = 0;
-        for (int r = 0; r < IMAGE_SIZE; r++) {
-            for (int c = 0; c < IMAGE_SIZE; c++) {
-                seq[idx++] = binaryPixels[r][c];
-            }
-        }
-        return seq;
-    }
-
     public void train(List<DigitImage> trainingData) {
         logger.info("Starting training with {} samples", trainingData.size());
         long startTime = System.currentTimeMillis();
@@ -68,7 +61,16 @@ public class DigitMarkovModel {
 
         for (DigitImage img : trainingData) {
             int[][] binary = binarize(img.pixels, 128);
-            int[] seq = flattenBinaryImage(binary);
+            int[] seq = extractor.extractSequence(binary);
+
+            // Log for first few samples if trace enabled, checking expected values
+            if (logger.isTraceEnabled() && digitCounts[img.label] == 0) {
+                logger.trace("Extracted sequence length: {}", seq.length);
+                if (seq.length > 5) {
+                    logger.trace("First 5 states: {}, {}, {}, {}, {}", seq[0], seq[1], seq[2], seq[3], seq[4]);
+                }
+            }
+
             int d = img.label;
 
             if (d < 0 || d >= NUM_DIGITS)
@@ -145,7 +147,16 @@ public class DigitMarkovModel {
 
     public ClassificationResult classifyWithScores(DigitImage img) {
         int[][] binary = binarize(img.pixels, 128);
-        int[] seq = flattenBinaryImage(binary);
+        int[] seq = extractor.extractSequence(binary);
+
+        // Debug logging for extraction
+        if (logger.isDebugEnabled()) {
+            logger.debug("Using extractor: {}", extractor.getClass().getSimpleName());
+            logger.debug("Extracted sequence length: {}", seq.length);
+            if (seq.length >= 5) {
+                logger.debug("First 5 states of input: {}, {}, {}, {}, {}", seq[0], seq[1], seq[2], seq[3], seq[4]);
+            }
+        }
 
         double[] logLikelihoods = new double[NUM_DIGITS];
         double[] surprises = new double[NUM_DIGITS];

@@ -2,6 +2,7 @@ package com.markovai.server.service;
 
 import com.markovai.server.ai.DigitImage;
 import com.markovai.server.ai.DigitMarkovModel;
+import com.markovai.server.ai.PixelSequenceExtractor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.io.Resource;
@@ -20,7 +21,7 @@ import java.util.List;
 public class MarkovTrainingService {
 
     private static final Logger logger = LoggerFactory.getLogger(MarkovTrainingService.class);
-    private final DigitMarkovModel model = new DigitMarkovModel();
+    private final DigitMarkovModel model = new DigitMarkovModel(new PixelSequenceExtractor());
     private boolean isReady = false;
 
     public DigitMarkovModel getModel() {
