@@ -25,16 +25,18 @@ public class FactorGraphBuilder {
     private final MultiSequenceExtractor rowExtractor;
     private final MultiSequenceExtractor colExtractor;
     private final SequenceExtractor patchExtractor;
+    private final com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model;
 
     public FactorGraphBuilder(DigitMarkovModel rowModel, DigitMarkovModel colModel, DigitMarkovModel patchModel,
             MultiSequenceExtractor rowExtractor, MultiSequenceExtractor colExtractor,
-            SequenceExtractor patchExtractor) {
+            SequenceExtractor patchExtractor, com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model) {
         this.rowModel = rowModel;
         this.colModel = colModel;
         this.patchModel = patchModel;
         this.rowExtractor = rowExtractor;
         this.colExtractor = colExtractor;
         this.patchExtractor = patchExtractor;
+        this.patch4x4Model = patch4x4Model;
     }
 
     public static class ConfigNode {
@@ -68,6 +70,9 @@ public class FactorGraphBuilder {
                         break;
                     case "PatchMarkovNode":
                         node = new PatchMarkovNode(cn.id, patchModel, patchExtractor);
+                        break;
+                    case "Patch4x4Node":
+                        node = new Patch4x4Node(cn.id, patch4x4Model);
                         break;
                     case "WeightedSumNode":
                         // Children wired later

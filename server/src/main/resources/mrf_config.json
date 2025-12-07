@@ -13,16 +13,21 @@
             "type": "PatchMarkovNode"
         },
         {
+            "id": "patch4x4",
+            "type": "Patch4x4Node"
+        },
+        {
             "id": "root",
             "type": "WeightedSumNode",
             "children": [
                 "row",
                 "col",
-                "patch"
+                "patch4x4"
             ],
             "weights": {
                 "row": 1.0,
-                "col": 1.0
+                "col": 1.0,
+                "patch4x4": 0.3
             }
         }
     ],

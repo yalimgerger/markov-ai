@@ -26,6 +26,7 @@ public class MarkovTrainingService {
 
     private static final Logger logger = LoggerFactory.getLogger(MarkovTrainingService.class);
     private final RowColumnDigitClassifier model = new RowColumnDigitClassifier();
+    private final com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model = new com.markovai.server.ai.DigitPatch4x4UnigramModel();
     private boolean isReady = false;
 
     public RowColumnDigitClassifier getModel() {
@@ -51,6 +52,15 @@ public class MarkovTrainingService {
 
                 model.train(trainingData);
 
+                // Train 4x4 Unigram Model
+                logger.info("Training 4x4 Patch Model...");
+                for (DigitImage img : trainingData) {
+                    int[][] binary = com.markovai.server.ai.DigitMarkovModel.binarize(img.pixels, 128);
+                    patch4x4Model.trainOnImage(img.label, binary);
+                }
+                patch4x4Model.finalizeProbabilities();
+                logger.info("4x4 Patch Model Trained.");
+
                 if (!testingData.isEmpty()) {
                     // Legacy Evaluation
                     model.evaluateAccuracy(testingData);
@@ -60,7 +70,8 @@ public class MarkovTrainingService {
                         if (is != null) {
                             FactorGraphBuilder builder = new FactorGraphBuilder(
                                     model.getRowModel(), model.getColumnModel(), model.getPatchModel(),
-                                    model.getRowExtractor(), model.getColumnExtractor(), model.getPatchExtractor());
+                                    model.getRowExtractor(), model.getColumnExtractor(), model.getPatchExtractor(),
+                                    patch4x4Model);
 
                             // Naive config root resolution
                             // Re-parsing to find root ID or let Builder handle it?
