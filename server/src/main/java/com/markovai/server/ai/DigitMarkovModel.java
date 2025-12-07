@@ -37,7 +37,13 @@ public class DigitMarkovModel {
         this.transitionProbs = new double[NUM_DIGITS][numStates][numStates];
 
         logger.info("Initializing DigitMarkovModel with {} states. Using extractor: {}", numStates,
-                extractor.getClass().getSimpleName());
+                extractor == null ? "None (Manual)" : extractor.getClass().getSimpleName());
+    }
+
+    // Constructor for when extractor is managed externally (e.g. by
+    // RowColumnDigitClassifier)
+    public DigitMarkovModel(int numStates) {
+        this(numStates, null);
     }
 
     /**
@@ -58,6 +64,10 @@ public class DigitMarkovModel {
     }
 
     public void train(List<DigitImage> trainingData) {
+        if (extractor == null) {
+            throw new IllegalStateException(
+                    "Cannot use train(List<DigitImage>) without a configured SequenceExtractor.");
+        }
         logger.info("Starting training with {} samples", trainingData.size());
         long startTime = System.currentTimeMillis();
 
@@ -84,19 +94,7 @@ public class DigitMarkovModel {
                 continue;
             digitCounts[d]++;
 
-            // Update initial state count
-            if (seq[0] >= 0 && seq[0] < numStates) {
-                initialCounts[d][seq[0]]++;
-            }
-
-            // Update transitions
-            for (int t = 1; t < seq.length; t++) {
-                int prev = seq[t - 1];
-                int cur = seq[t];
-                if (prev >= 0 && prev < numStates && cur >= 0 && cur < numStates) {
-                    transitionCounts[d][prev][cur]++;
-                }
-            }
+            updateCounts(d, seq);
         }
 
         for (int d = 0; d < NUM_DIGITS; d++) {
@@ -109,7 +107,47 @@ public class DigitMarkovModel {
         logger.info("Training complete in {} ms", duration);
     }
 
-    private void finalizeProbabilities() {
+    // New method for multi-sequence training
+    public void trainOnSequences(int digit, java.util.List<int[]> sequences) {
+        if (digit < 0 || digit >= NUM_DIGITS)
+            return;
+
+        logger.info("Starting training for digit {} with {} sequences", digit, sequences.size());
+        long startTime = System.currentTimeMillis();
+
+        for (int[] seq : sequences) {
+            updateCounts(digit, seq);
+        }
+
+        // Probabilities are finalized globally, so this method doesn't call
+        // finalizeProbabilities()
+        // It's expected that finalizeProbabilities() will be called once after all
+        // trainOnSequences calls.
+
+        long duration = System.currentTimeMillis() - startTime;
+        logger.info("Training for digit {} complete in {} ms", digit, duration);
+    }
+
+    private void updateCounts(int d, int[] seq) {
+        if (seq.length == 0)
+            return;
+
+        // Update initial state count
+        if (seq[0] >= 0 && seq[0] < numStates) {
+            initialCounts[d][seq[0]]++;
+        }
+
+        // Update transitions
+        for (int t = 1; t < seq.length; t++) {
+            int prev = seq[t - 1];
+            int cur = seq[t];
+            if (prev >= 0 && prev < numStates && cur >= 0 && cur < numStates) {
+                transitionCounts[d][prev][cur]++;
+            }
+        }
+    }
+
+    public void finalizeProbabilities() {
         for (int d = 0; d < NUM_DIGITS; d++) {
             // Initial probabilities: Calculate total count + smoothing mass
             long totalInit = numStates; // Add '1' for each state (Laplace smoothing)
@@ -141,6 +179,14 @@ public class DigitMarkovModel {
             }
         }
         logger.debug("Probabilities finalized for {} states.", numStates);
+    }
+
+    public double logLikelihoodForSequences(int digit, java.util.List<int[]> sequences) {
+        double totalLogL = 0.0;
+        for (int[] seq : sequences) {
+            totalLogL += logLikelihood(digit, seq);
+        }
+        return totalLogL;
     }
 
     public double logLikelihood(int digit, int[] seq) {

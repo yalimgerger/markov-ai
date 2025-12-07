@@ -1,9 +1,7 @@
 package com.markovai.server.ai;
 
 import org.junit.jupiter.api.Test;
-import java.util.Collections;
 import static org.junit.jupiter.api.Assertions.*;
-import com.markovai.server.ai.PatchSequenceExtractor;
 
 class DigitMarkovModelTest {
 
