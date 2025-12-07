@@ -27,3 +27,6 @@ yarn-error.log
 
 # Vite Output
 dist/
+
+# Large Datasets
+server/src/main/resources/mnist/
