@@ -44,6 +44,7 @@ public class FactorGraphBuilder {
         public String type;
         public List<String> children;
         public Map<String, Double> weights;
+        public Double smoothingLambda;
     }
 
     public static class ConfigRoot {
@@ -72,7 +73,8 @@ public class FactorGraphBuilder {
                         node = new PatchMarkovNode(cn.id, patchModel, patchExtractor);
                         break;
                     case "Patch4x4Node":
-                        node = new Patch4x4Node(cn.id, patch4x4Model);
+                        double lambda = cn.smoothingLambda != null ? cn.smoothingLambda : 0.0;
+                        node = new Patch4x4Node(cn.id, patch4x4Model, lambda);
                         break;
                     case "WeightedSumNode":
                         // Children wired later

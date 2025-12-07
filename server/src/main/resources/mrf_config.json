@@ -14,7 +14,8 @@
         },
         {
             "id": "patch4x4",
-            "type": "Patch4x4Node"
+            "type": "Patch4x4Node",
+            "smoothingLambda": 0.2
         },
         {
             "id": "root",

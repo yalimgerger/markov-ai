@@ -46,7 +46,7 @@ public class DigitPatch4x4UnigramModel {
         }
     }
 
-    private int encodePatch(int[][] binaryImage, int startRow, int startCol) {
+    public static int encodePatch(int[][] binaryImage, int startRow, int startCol) {
         int symbol = 0;
         for (int pr = 0; pr < 4; pr++) {
             for (int pc = 0; pc < 4; pc++) {
@@ -60,6 +60,14 @@ public class DigitPatch4x4UnigramModel {
             }
         }
         return symbol;
+    }
+
+    public double logProbForSymbol(int digit, int symbol) {
+        Double lp = logProbPerDigit[digit].get(symbol);
+        if (lp == null) {
+            return logProbUnseen[digit];
+        }
+        return lp;
     }
 
     public void finalizeProbabilities() {
