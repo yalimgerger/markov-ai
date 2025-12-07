@@ -9,6 +9,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.markovai.server.ai.hierarchy.WeightedSumNode;
+
 public class MarkovFieldDigitClassifier {
     private static final Logger logger = LoggerFactory.getLogger(MarkovFieldDigitClassifier.class);
 
@@ -51,7 +53,18 @@ public class MarkovFieldDigitClassifier {
         // Compute children first
         Map<String, NodeResult> childResults = new HashMap<>();
         for (DigitFactorNode child : node.getChildren()) {
-            childResults.put(child.getId(), computeRecursive(child, img, memo));
+            boolean skip = false;
+            // Optimization: If parent is WeightedSumNode and weight is 0, skip calculation
+            if (node instanceof WeightedSumNode) {
+                WeightedSumNode wsn = (WeightedSumNode) node;
+                if (wsn.getWeight(child.getId()) == 0.0) {
+                    skip = true;
+                }
+            }
+
+            if (!skip) {
+                childResults.put(child.getId(), computeRecursive(child, img, memo));
+            }
         }
 
         // Compute this node

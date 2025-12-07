@@ -39,13 +39,34 @@ public class PatchMarkovNode implements DigitFactorNode {
         int[][] binary = DigitMarkovModel.binarize(img.pixels, 128);
         int[] sequence = extractor.extractSequence(binary);
 
-        double[] ll = new double[10];
+        // 1. Compute Raw Log-Likelihoods & Total Steps
+        double[] sumLogL = new double[10];
+        long totalSteps = (sequence.length > 1) ? (sequence.length - 1) : 1;
+
         for (int d = 0; d < 10; d++) {
-            ll[d] = model.logLikelihood(d, sequence);
+            sumLogL[d] = model.logLikelihood(d, sequence);
         }
 
-        logger.debug("PatchMarkovNode {} computed log-likelihoods for image label {}", id, img.label);
+        // 2. Average per-step Log-Likelihood
+        double[] avgLogL = new double[10];
+        for (int d = 0; d < 10; d++) {
+            avgLogL[d] = sumLogL[d] / totalSteps;
+        }
 
-        return new NodeResult(ll);
+        // 3. Debug Logging
+        if (logger.isDebugEnabled()) {
+            double minAvg = Double.MAX_VALUE;
+            double maxAvg = Double.MIN_VALUE;
+            for (double val : avgLogL) {
+                if (val < minAvg)
+                    minAvg = val;
+                if (val > maxAvg)
+                    maxAvg = val;
+            }
+            logger.debug("PatchMarkovNode {} [Label {}]: Steps={}. AvgLogL range=[{:.4f}, {:.4f}]",
+                    id, img.label, totalSteps, minAvg, maxAvg);
+        }
+
+        return new NodeResult(avgLogL);
     }
 }

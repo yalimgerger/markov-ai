@@ -27,6 +27,10 @@ public class WeightedSumNode implements DigitFactorNode {
         this.children.add(child);
     }
 
+    public double getWeight(String childId) {
+        return weights.getOrDefault(childId, 0.0);
+    }
+
     @Override
     public String getId() {
         return id;
@@ -43,13 +47,17 @@ public class WeightedSumNode implements DigitFactorNode {
 
         for (DigitFactorNode child : children) {
             NodeResult cr = childResults.get(child.getId());
+            double w = weights.getOrDefault(child.getId(), 0.0);
+
             if (cr == null) {
-                // Should not happen if traversed correctly
+                if (w == 0.0) {
+                    // Optimization: Skipped calculation because weight is 0
+                    continue;
+                }
                 logger.warn("Missing result for child {}", child.getId());
                 continue;
             }
 
-            double w = weights.getOrDefault(child.getId(), 1.0);
             for (int d = 0; d < 10; d++) {
                 totalLogL[d] += w * cr.logLikelihoodsPerDigit[d];
             }

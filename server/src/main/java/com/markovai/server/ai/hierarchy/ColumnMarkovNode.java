@@ -39,13 +39,42 @@ public class ColumnMarkovNode implements DigitFactorNode {
         int[][] binary = DigitMarkovModel.binarize(img.pixels, 128);
         List<int[]> sequences = extractor.extractSequences(binary);
 
-        double[] ll = new double[10];
-        for (int d = 0; d < 10; d++) {
-            ll[d] = model.logLikelihoodForSequences(d, sequences);
+        // 1. Compute Raw Log-Likelihoods & Total Steps
+        double[] sumLogL = new double[10];
+        long totalSteps = 0;
+        for (int[] seq : sequences) {
+            if (seq.length > 1) {
+                totalSteps += (seq.length - 1);
+            }
         }
 
-        logger.debug("ColumnMarkovNode {} computed log-likelihoods for image label {}", id, img.label);
+        if (totalSteps == 0)
+            totalSteps = 1;
 
-        return new NodeResult(ll);
+        for (int d = 0; d < 10; d++) {
+            sumLogL[d] = model.logLikelihoodForSequences(d, sequences);
+        }
+
+        // 2. Average per-step Log-Likelihood
+        double[] avgLogL = new double[10];
+        for (int d = 0; d < 10; d++) {
+            avgLogL[d] = sumLogL[d] / totalSteps;
+        }
+
+        // 3. Debug Logging
+        if (logger.isDebugEnabled()) {
+            double minAvg = Double.MAX_VALUE;
+            double maxAvg = Double.MIN_VALUE;
+            for (double val : avgLogL) {
+                if (val < minAvg)
+                    minAvg = val;
+                if (val > maxAvg)
+                    maxAvg = val;
+            }
+            logger.debug("ColumnMarkovNode {} [Label {}]: Steps={}. AvgLogL range=[{:.4f}, {:.4f}]",
+                    id, img.label, totalSteps, minAvg, maxAvg);
+        }
+
+        return new NodeResult(avgLogL);
     }
 }
