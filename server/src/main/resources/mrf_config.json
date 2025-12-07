@@ -1,0 +1,31 @@
+{
+    "nodes": [
+        {
+            "id": "row",
+            "type": "RowMarkovNode"
+        },
+        {
+            "id": "col",
+            "type": "ColumnMarkovNode"
+        },
+        {
+            "id": "patch",
+            "type": "PatchMarkovNode"
+        },
+        {
+            "id": "root",
+            "type": "WeightedSumNode",
+            "children": [
+                "row",
+                "col",
+                "patch"
+            ],
+            "weights": {
+                "row": 1.0,
+                "col": 1.0,
+                "patch": 1.0
+            }
+        }
+    ],
+    "rootNodeId": "root"
+}

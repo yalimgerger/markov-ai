@@ -2,6 +2,10 @@ package com.markovai.server.service;
 
 import com.markovai.server.ai.DigitImage;
 import com.markovai.server.ai.RowColumnDigitClassifier;
+import com.markovai.server.ai.MarkovFieldDigitClassifier;
+import com.markovai.server.ai.hierarchy.DigitFactorNode;
+import com.markovai.server.ai.hierarchy.FactorGraphBuilder;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.io.Resource;
@@ -15,6 +19,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class MarkovTrainingService {
@@ -37,8 +42,7 @@ public class MarkovTrainingService {
             try {
                 logger.info("Initializing Markov Training Service...");
                 List<DigitImage> trainingData = loadImages("classpath:mnist/training/*/*.png");
-                List<DigitImage> testingData = loadImages("classpath:mnist/testing/*/*.png"); // Optional: load testing
-                                                                                              // too if we want to eval
+                List<DigitImage> testingData = loadImages("classpath:mnist/testing/*/*.png");
 
                 if (trainingData.isEmpty()) {
                     logger.error("No training data found!");
@@ -48,7 +52,58 @@ public class MarkovTrainingService {
                 model.train(trainingData);
 
                 if (!testingData.isEmpty()) {
+                    // Legacy Evaluation
                     model.evaluateAccuracy(testingData);
+
+                    // MRF Evaluation
+                    try (InputStream is = getClass().getResourceAsStream("/mrf_config.json")) {
+                        if (is != null) {
+                            FactorGraphBuilder builder = new FactorGraphBuilder(
+                                    model.getRowModel(), model.getColumnModel(), model.getPatchModel(),
+                                    model.getRowExtractor(), model.getColumnExtractor(), model.getPatchExtractor());
+
+                            // Naive config root resolution
+                            // Re-parsing to find root ID or let Builder handle it?
+                            // Builder returns Map<String, Node>, we need root ID.
+                            // I'll update Builder to just return Root or a Result object, or parse JSON
+                            // separately?
+                            // Actually Builder.build returns Map. I need to find the root.
+                            // Let's reload config to get root ID or just ask Builder to return it.
+                            // To keep it simple, I'll modify Builder to assume root is returned or
+                            // accessible.
+                            // Wait, I designed Builder to return Map. I can just parse config here to get
+                            // root ID, or modify Builder.
+
+                            // Better: Let's use the ObjectMapper here to get the root ID quickly
+                            // OR update FactorGraphBuilder to return a graph object containing root.
+                            // Since I can't easily change Builder signature in replace_file cleanly without
+                            // seeing it,
+                            // I'll assume I can read the JSON again or use a helper.
+
+                            // Actually, I'll just change FactorGraphBuilder to return a Graph structure in
+                            // a separate file or just parse locally.
+                            // Let's stick with parsing here to get root ID.
+                            ObjectMapper mapper = new ObjectMapper();
+                            FactorGraphBuilder.ConfigRoot config = mapper.readValue(
+                                    getClass().getResourceAsStream("/mrf_config.json"),
+                                    FactorGraphBuilder.ConfigRoot.class);
+
+                            Map<String, DigitFactorNode> nodes = builder
+                                    .build(getClass().getResourceAsStream("/mrf_config.json"));
+                            DigitFactorNode root = nodes.get(config.rootNodeId);
+
+                            if (root != null) {
+                                MarkovFieldDigitClassifier mrf = new MarkovFieldDigitClassifier(root, nodes);
+                                mrf.evaluateAccuracy(testingData);
+                            } else {
+                                logger.error("MRF Root node not found: {}", config.rootNodeId);
+                            }
+                        } else {
+                            logger.error("mrf_config.json not found!");
+                        }
+                    } catch (Exception ex) {
+                        logger.error("Failed to init MRF", ex);
+                    }
                 }
 
                 isReady = true;

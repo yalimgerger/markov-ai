@@ -12,18 +12,48 @@ public class RowColumnDigitClassifier {
 
     private final DigitMarkovModel rowModel;
     private final DigitMarkovModel columnModel;
+    private final DigitMarkovModel patchModel;
+
     private final MultiSequenceExtractor rowExtractor;
     private final MultiSequenceExtractor columnExtractor;
+    private final SequenceExtractor patchExtractor;
 
     public RowColumnDigitClassifier() {
         this.rowExtractor = new RowPatchSequenceExtractor();
         this.columnExtractor = new ColumnPatchSequenceExtractor();
+        this.patchExtractor = new PatchSequenceExtractor();
+
         this.rowModel = new DigitMarkovModel(NUM_STATES);
         this.columnModel = new DigitMarkovModel(NUM_STATES);
+        this.patchModel = new DigitMarkovModel(NUM_STATES);
+    }
+
+    public DigitMarkovModel getRowModel() {
+        return rowModel;
+    }
+
+    public DigitMarkovModel getColumnModel() {
+        return columnModel;
+    }
+
+    public DigitMarkovModel getPatchModel() {
+        return patchModel;
+    }
+
+    public MultiSequenceExtractor getRowExtractor() {
+        return rowExtractor;
+    }
+
+    public MultiSequenceExtractor getColumnExtractor() {
+        return columnExtractor;
+    }
+
+    public SequenceExtractor getPatchExtractor() {
+        return patchExtractor;
     }
 
     public void train(List<DigitImage> trainingData) {
-        logger.info("Starting Row-Column training with {} samples", trainingData.size());
+        logger.info("Starting Row-Column-Patch training with {} samples", trainingData.size());
 
         int[] digitCounts = new int[NUM_DIGITS];
         long totalRowSeqs = 0;
@@ -39,9 +69,11 @@ public class RowColumnDigitClassifier {
 
             List<int[]> rowSeqs = rowExtractor.extractSequences(binary);
             List<int[]> colSeqs = columnExtractor.extractSequences(binary);
+            int[] patchSeq = patchExtractor.extractSequence(binary);
 
             rowModel.trainOnSequences(d, rowSeqs);
             columnModel.trainOnSequences(d, colSeqs);
+            patchModel.trainOnSequences(d, java.util.Collections.singletonList(patchSeq));
 
             totalRowSeqs += rowSeqs.size();
             totalColSeqs += colSeqs.size();
@@ -56,7 +88,10 @@ public class RowColumnDigitClassifier {
         rowModel.finalizeProbabilities();
         logger.info("Finalizing Column Model...");
         columnModel.finalizeProbabilities();
-        logger.info("Row-Column Training Complete.");
+        logger.info("Finalizing Patch Model...");
+        patchModel.finalizeProbabilities();
+
+        logger.info("Row-Column-Patch Training Complete.");
     }
 
     public ClassificationResult classifyWithScores(DigitImage img) {
@@ -80,6 +115,8 @@ public class RowColumnDigitClassifier {
         for (int d = 0; d < NUM_DIGITS; d++) {
             double rowLogL = rowModel.logLikelihoodForSequences(d, rowSeqs);
             double colLogL = columnModel.logLikelihoodForSequences(d, colSeqs);
+
+            // Legacy behavior: Sum row + col only
             double totalLogL = rowLogL + colLogL;
 
             logLikelihoods[d] = totalLogL;

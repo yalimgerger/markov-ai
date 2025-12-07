@@ -1,0 +1,109 @@
+package com.markovai.server.ai.hierarchy;
+
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.markovai.server.ai.DigitMarkovModel;
+import com.markovai.server.ai.MultiSequenceExtractor;
+import com.markovai.server.ai.SequenceExtractor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+public class FactorGraphBuilder {
+
+    private static final Logger logger = LoggerFactory.getLogger(FactorGraphBuilder.class);
+
+    // Dependencies to inject into leaf nodes
+    private final DigitMarkovModel rowModel;
+    private final DigitMarkovModel colModel;
+    private final DigitMarkovModel patchModel;
+
+    private final MultiSequenceExtractor rowExtractor;
+    private final MultiSequenceExtractor colExtractor;
+    private final SequenceExtractor patchExtractor;
+
+    public FactorGraphBuilder(DigitMarkovModel rowModel, DigitMarkovModel colModel, DigitMarkovModel patchModel,
+            MultiSequenceExtractor rowExtractor, MultiSequenceExtractor colExtractor,
+            SequenceExtractor patchExtractor) {
+        this.rowModel = rowModel;
+        this.colModel = colModel;
+        this.patchModel = patchModel;
+        this.rowExtractor = rowExtractor;
+        this.colExtractor = colExtractor;
+        this.patchExtractor = patchExtractor;
+    }
+
+    public static class ConfigNode {
+        public String id;
+        public String type;
+        public List<String> children;
+        public Map<String, Double> weights;
+    }
+
+    public static class ConfigRoot {
+        public List<ConfigNode> nodes;
+        public String rootNodeId;
+    }
+
+    public Map<String, DigitFactorNode> build(InputStream jsonStream) {
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            ConfigRoot config = mapper.readValue(jsonStream, ConfigRoot.class);
+
+            Map<String, DigitFactorNode> nodes = new HashMap<>();
+
+            // 1. Create Nodes
+            for (ConfigNode cn : config.nodes) {
+                DigitFactorNode node = null;
+                switch (cn.type) {
+                    case "RowMarkovNode":
+                        node = new RowMarkovNode(cn.id, rowModel, rowExtractor);
+                        break;
+                    case "ColumnMarkovNode":
+                        node = new ColumnMarkovNode(cn.id, colModel, colExtractor);
+                        break;
+                    case "PatchMarkovNode":
+                        node = new PatchMarkovNode(cn.id, patchModel, patchExtractor);
+                        break;
+                    case "WeightedSumNode":
+                        // Children wired later
+                        node = new WeightedSumNode(cn.id, new ArrayList<>(),
+                                cn.weights != null ? cn.weights : new HashMap<>());
+                        break;
+                    default:
+                        logger.warn("Unknown node type: {}", cn.type);
+                }
+                if (node != null) {
+                    nodes.put(cn.id, node);
+                }
+            }
+
+            // 2. Wire Children
+            for (ConfigNode cn : config.nodes) {
+                if (cn.children != null && !cn.children.isEmpty() && "WeightedSumNode".equals(cn.type)) {
+                    WeightedSumNode parent = (WeightedSumNode) nodes.get(cn.id);
+                    if (parent != null) {
+                        for (String childId : cn.children) {
+                            DigitFactorNode child = nodes.get(childId);
+                            if (child != null) {
+                                parent.addChild(child);
+                            } else {
+                                logger.error("Missing child node id: {} for parent {}", childId, cn.id);
+                            }
+                        }
+                    }
+                }
+            }
+
+            logger.info("Factor Graph built with {} nodes. Root: {}", nodes.size(), config.rootNodeId);
+            return nodes;
+
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to build factor graph from JSON", e);
+        }
+    }
+}
