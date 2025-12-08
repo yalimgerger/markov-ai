@@ -30,3 +30,10 @@ dist/
 
 # Large Datasets
 server/src/main/resources/mnist/
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
