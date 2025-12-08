@@ -1,13 +1,15 @@
 package com.markovai.server.ai.hierarchy;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.markovai.server.ai.DigitMarkovModel;
-import com.markovai.server.ai.MultiSequenceExtractor;
-import com.markovai.server.ai.SequenceExtractor;
+import com.markovai.db.DigitImageDao;
+import com.markovai.db.MarkovChainResultDao;
+import com.markovai.db.SqliteInitializer;
+import com.markovai.server.ai.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import java.io.InputStream;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -16,6 +18,8 @@ import java.util.Map;
 public class FactorGraphBuilder {
 
     private static final Logger logger = LoggerFactory.getLogger(FactorGraphBuilder.class);
+    private static final String DB_PATH = "markov_cache.db";
+    private static final String CHAIN_VERSION = "v1";
 
     // Dependencies to inject into leaf nodes
     private final DigitMarkovModel rowModel;
@@ -25,11 +29,14 @@ public class FactorGraphBuilder {
     private final MultiSequenceExtractor rowExtractor;
     private final MultiSequenceExtractor colExtractor;
     private final SequenceExtractor patchExtractor;
-    private final com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model;
+    private final DigitPatch4x4UnigramModel patch4x4Model;
+
+    private final DigitImageDao imageDao;
+    private final MarkovChainResultDao resultDao;
 
     public FactorGraphBuilder(DigitMarkovModel rowModel, DigitMarkovModel colModel, DigitMarkovModel patchModel,
             MultiSequenceExtractor rowExtractor, MultiSequenceExtractor colExtractor,
-            SequenceExtractor patchExtractor, com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model) {
+            SequenceExtractor patchExtractor, DigitPatch4x4UnigramModel patch4x4Model) {
         this.rowModel = rowModel;
         this.colModel = colModel;
         this.patchModel = patchModel;
@@ -37,6 +44,17 @@ public class FactorGraphBuilder {
         this.colExtractor = colExtractor;
         this.patchExtractor = patchExtractor;
         this.patch4x4Model = patch4x4Model;
+
+        // Initialize DB
+        try {
+            SqliteInitializer.initialize(DB_PATH);
+            logger.info("Initialized SQLite cache at {}", DB_PATH);
+        } catch (SQLException e) {
+            logger.error("Failed to initialize SQLite", e);
+            throw new RuntimeException(e);
+        }
+        this.imageDao = new DigitImageDao(DB_PATH);
+        this.resultDao = new MarkovChainResultDao(DB_PATH);
     }
 
     public static class ConfigNode {
@@ -64,17 +82,30 @@ public class FactorGraphBuilder {
                 DigitFactorNode node = null;
                 switch (cn.type) {
                     case "RowMarkovNode":
-                        node = new RowMarkovNode(cn.id, rowModel, rowExtractor);
+                        RowMarkovEvaluator rowEval = new RowMarkovEvaluator(rowModel, rowExtractor, CHAIN_VERSION);
+                        CachedMarkovChainEvaluator cachedRow = new CachedMarkovChainEvaluator(rowEval, imageDao,
+                                resultDao);
+                        node = new RowMarkovNode(cn.id, cachedRow);
                         break;
                     case "ColumnMarkovNode":
-                        node = new ColumnMarkovNode(cn.id, colModel, colExtractor);
+                        ColumnMarkovEvaluator colEval = new ColumnMarkovEvaluator(colModel, colExtractor,
+                                CHAIN_VERSION);
+                        CachedMarkovChainEvaluator cachedCol = new CachedMarkovChainEvaluator(colEval, imageDao,
+                                resultDao);
+                        node = new ColumnMarkovNode(cn.id, cachedCol);
                         break;
                     case "PatchMarkovNode":
-                        node = new PatchMarkovNode(cn.id, patchModel, patchExtractor);
+                        Patch2x2Evaluator patchEval = new Patch2x2Evaluator(patchModel, patchExtractor, CHAIN_VERSION);
+                        CachedMarkovChainEvaluator cachedPatch = new CachedMarkovChainEvaluator(patchEval, imageDao,
+                                resultDao);
+                        node = new PatchMarkovNode(cn.id, cachedPatch);
                         break;
                     case "Patch4x4Node":
                         double lambda = cn.smoothingLambda != null ? cn.smoothingLambda : 0.0;
-                        node = new Patch4x4Node(cn.id, patch4x4Model, lambda);
+                        Patch4x4Evaluator p4Eval = new Patch4x4Evaluator(patch4x4Model, lambda, CHAIN_VERSION);
+                        CachedMarkovChainEvaluator cachedP4 = new CachedMarkovChainEvaluator(p4Eval, imageDao,
+                                resultDao);
+                        node = new Patch4x4Node(cn.id, cachedP4);
                         break;
                     case "WeightedSumNode":
                         // Children wired later

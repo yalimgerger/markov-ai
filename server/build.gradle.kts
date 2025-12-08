@@ -7,6 +7,7 @@ plugins {
 dependencies {
     implementation("org.springframework.boot:spring-boot-starter-web")
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    implementation("org.xerial:sqlite-jdbc:3.45.1.0")
 }
 
 tasks.test {
@@ -37,4 +38,11 @@ val npmBuild by tasks.registering(Exec::class) {
 
 tasks.processResources {
     dependsOn(npmBuild)
+}
+
+tasks.register<JavaExec>("precompute") {
+    group = "application"
+    description = "Runs the offline precompute tool"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.markovai.server.tools.DigitDatasetPrecompute")
 }

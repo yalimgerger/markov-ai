@@ -1,8 +1,8 @@
 package com.markovai.server.ai.hierarchy;
 
+import com.markovai.server.ai.CachedMarkovChainEvaluator;
 import com.markovai.server.ai.DigitImage;
 import com.markovai.server.ai.DigitMarkovModel;
-import com.markovai.server.ai.MultiSequenceExtractor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -14,13 +14,11 @@ public class RowMarkovNode implements DigitFactorNode {
 
     private static final Logger logger = LoggerFactory.getLogger(RowMarkovNode.class);
     private final String id;
-    private final DigitMarkovModel model;
-    private final MultiSequenceExtractor extractor;
+    private final CachedMarkovChainEvaluator evaluator;
 
-    public RowMarkovNode(String id, DigitMarkovModel model, MultiSequenceExtractor extractor) {
+    public RowMarkovNode(String id, CachedMarkovChainEvaluator evaluator) {
         this.id = id;
-        this.model = model;
-        this.extractor = extractor;
+        this.evaluator = evaluator;
         logger.debug("Created RowMarkovNode with id {}", id);
     }
 
@@ -36,35 +34,18 @@ public class RowMarkovNode implements DigitFactorNode {
 
     @Override
     public NodeResult computeForImage(DigitImage img, Map<String, NodeResult> childResults) {
-        int[][] binary = DigitMarkovModel.binarize(img.pixels, 128);
-        List<int[]> sequences = extractor.extractSequences(binary);
-
-        // 1. Compute Raw Log-Likelihoods & Total Steps
-        double[] sumLogL = new double[10];
-        long totalSteps = 0;
-        for (int[] seq : sequences) {
-            if (seq.length > 1) {
-                totalSteps += (seq.length - 1);
+        // Binarize and flatten
+        int[][] binary2D = DigitMarkovModel.binarize(img.pixels, 128);
+        byte[] binaryFlat = new byte[784];
+        for (int r = 0; r < 28; r++) {
+            for (int c = 0; c < 28; c++) {
+                binaryFlat[r * 28 + c] = (byte) binary2D[r][c];
             }
         }
 
-        // Avoid division by zero if sequences are empty/too short (unlikely)
-        if (totalSteps == 0)
-            totalSteps = 1;
+        double[] avgLogL = evaluator.evaluate(img.imageRelPath, img.imageHash, binaryFlat);
 
-        for (int d = 0; d < 10; d++) {
-            sumLogL[d] = model.logLikelihoodForSequences(d, sequences);
-        }
-
-        // 2. Average per-step Log-Likelihood
-        double[] avgLogL = new double[10];
-        for (int d = 0; d < 10; d++) {
-            avgLogL[d] = sumLogL[d] / totalSteps;
-        }
-
-        // 3. Debug Logging
         if (logger.isDebugEnabled()) {
-            // Find min/max for range logging
             double minAvg = Double.MAX_VALUE;
             double maxAvg = Double.MIN_VALUE;
             for (double val : avgLogL) {
@@ -73,8 +54,8 @@ public class RowMarkovNode implements DigitFactorNode {
                 if (val > maxAvg)
                     maxAvg = val;
             }
-            logger.debug("RowMarkovNode {} [Label {}]: Steps={}. AvgLogL range=[{:.4f}, {:.4f}]",
-                    id, img.label, totalSteps, minAvg, maxAvg);
+            logger.debug("RowMarkovNode {} [Label {}]: AvgLogL range=[{:.4f}, {:.4f}]",
+                    id, img.label, minAvg, maxAvg);
         }
 
         return new NodeResult(avgLogL);
