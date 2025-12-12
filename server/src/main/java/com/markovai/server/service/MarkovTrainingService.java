@@ -104,7 +104,7 @@ public class MarkovTrainingService {
                             DigitFactorNode root = nodes.get(config.rootNodeId);
 
                             if (root != null) {
-                                MarkovFieldDigitClassifier mrf = new MarkovFieldDigitClassifier(root, nodes);
+                                MarkovFieldDigitClassifier mrf = new MarkovFieldDigitClassifier(root);
                                 mrf.evaluateAccuracy(testingData);
                             } else {
                                 logger.error("MRF Root node not found: {}", config.rootNodeId);
@@ -128,7 +128,8 @@ public class MarkovTrainingService {
     private List<DigitImage> loadImages(String pattern) throws IOException {
         List<DigitImage> images = new ArrayList<>();
         PathMatchingResourcePatternResolver resolver = new PathMatchingResourcePatternResolver();
-        Resource[] resources = resolver.getResources(pattern);
+        String searchPattern = (pattern != null) ? pattern : "";
+        Resource[] resources = resolver.getResources(searchPattern);
 
         logger.info("Found {} image files for pattern: {}", resources.length, pattern);
 
@@ -157,11 +158,48 @@ public class MarkovTrainingService {
 
                 // Extract label from parent directory name
                 // Format: .../mnist/training/5/img.png -> label is 5
-                // Resource URL might be: file:/.../mnist/training/5/3423.png
-                // We can parse the path.
-                int label = extractLabel(res);
+                int label = -1;
+                String relPath = null;
+                try {
+                    String path = res.getURL().getPath();
+                    String[] parts = path.split("/");
+                    // Expected structure ending: .../mnist/training/5/filename.png
+                    // We want to extract e.g. "training/5/filename.png" or "testing/5/filename.png"
+                    // Find "mnist" index and take substring?
+                    // Or finding "training" or "testing"
 
-                images.add(new DigitImage(pixels, label));
+                    int idx = -1;
+                    for (int i = 0; i < parts.length; i++) {
+                        if ("training".equals(parts[i]) || "testing".equals(parts[i])) {
+                            idx = i;
+                            break;
+                        }
+                    }
+
+                    if (idx != -1 && idx < parts.length - 1) {
+                        StringBuilder sb = new StringBuilder();
+                        for (int i = idx; i < parts.length; i++) {
+                            if (sb.length() > 0)
+                                sb.append("/");
+                            sb.append(parts[i]);
+                        }
+                        relPath = sb.toString();
+
+                        // Label is parts[length-2]
+                        label = Integer.parseInt(parts[parts.length - 2]);
+                    } else {
+                        // Fallback
+                        label = Integer.parseInt(parts[parts.length - 2]);
+                        relPath = "unknown/" + label + "/" + parts[parts.length - 1];
+                    }
+
+                } catch (Exception e) {
+                    logger.warn("Could not determine metadata for {}", res.getDescription());
+                }
+
+                String hash = computeHash(pixels);
+
+                images.add(new DigitImage(pixels, label, relPath, hash));
             } catch (Exception e) {
                 logger.warn("Failed to load image: {}", res.getFilename(), e);
             }
@@ -169,19 +207,28 @@ public class MarkovTrainingService {
         return images;
     }
 
-    private int extractLabel(Resource res) {
+    private String computeHash(int[][] pixels) {
         try {
-            // Typical path: .../training/5/123.png
-            String path = res.getURL().getPath();
-            String[] parts = path.split("/");
-            // The label should be the directory name containing the file
-            // parts[length-1] is filename
-            // parts[length-2] is label directory
-            String labelStr = parts[parts.length - 2];
-            return Integer.parseInt(labelStr);
+            // Binarize using same logic as main model
+            int[][] binary = com.markovai.server.ai.DigitMarkovModel.binarize(pixels, 128);
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            for (int r = 0; r < 28; r++) {
+                for (int c = 0; c < 28; c++) {
+                    digest.update((byte) binary[r][c]);
+                }
+            }
+            byte[] hash = digest.digest();
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hash) {
+                String hex = Integer.toHexString(0xff & b);
+                if (hex.length() == 1)
+                    hexString.append('0');
+                hexString.append(hex);
+            }
+            return hexString.toString();
         } catch (Exception e) {
-            logger.warn("Could not extract label from path {}, defaulting to -1", res.getDescription());
-            return -1;
+            return null;
         }
     }
+
 }
