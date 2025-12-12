@@ -40,7 +40,7 @@ public class DigitPatch4x4UnigramModel {
             for (int c = 0; c < 7; c++) {
                 int symbol = encodePatch(binaryImage, r * 4, c * 4);
 
-                countsPerDigit[digitLabel].merge(symbol, 1, Integer::sum);
+                countsPerDigit[digitLabel].merge(symbol, 1, (a, b) -> a + b);
                 totalPatchesPerDigit[digitLabel]++;
             }
         }

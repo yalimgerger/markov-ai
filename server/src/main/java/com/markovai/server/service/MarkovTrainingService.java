@@ -104,7 +104,7 @@ public class MarkovTrainingService {
                             DigitFactorNode root = nodes.get(config.rootNodeId);
 
                             if (root != null) {
-                                MarkovFieldDigitClassifier mrf = new MarkovFieldDigitClassifier(root, nodes);
+                                MarkovFieldDigitClassifier mrf = new MarkovFieldDigitClassifier(root);
                                 mrf.evaluateAccuracy(testingData);
                             } else {
                                 logger.error("MRF Root node not found: {}", config.rootNodeId);
@@ -128,7 +128,8 @@ public class MarkovTrainingService {
     private List<DigitImage> loadImages(String pattern) throws IOException {
         List<DigitImage> images = new ArrayList<>();
         PathMatchingResourcePatternResolver resolver = new PathMatchingResourcePatternResolver();
-        Resource[] resources = resolver.getResources(pattern);
+        String searchPattern = (pattern != null) ? pattern : "";
+        Resource[] resources = resolver.getResources(searchPattern);
 
         logger.info("Found {} image files for pattern: {}", resources.length, pattern);
 

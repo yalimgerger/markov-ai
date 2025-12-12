@@ -15,11 +15,9 @@ public class MarkovFieldDigitClassifier {
     private static final Logger logger = LoggerFactory.getLogger(MarkovFieldDigitClassifier.class);
 
     private final DigitFactorNode root;
-    private final Map<String, DigitFactorNode> allNodes;
 
-    public MarkovFieldDigitClassifier(DigitFactorNode root, Map<String, DigitFactorNode> allNodes) {
+    public MarkovFieldDigitClassifier(DigitFactorNode root) {
         this.root = root;
-        this.allNodes = allNodes;
     }
 
     public int classify(DigitImage img) {
