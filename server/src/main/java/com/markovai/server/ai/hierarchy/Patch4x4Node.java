@@ -1,8 +1,9 @@
 package com.markovai.server.ai.hierarchy;
 
-import com.markovai.server.ai.CachedMarkovChainEvaluator;
 import com.markovai.server.ai.DigitImage;
 import com.markovai.server.ai.DigitMarkovModel;
+import com.markovai.server.ai.DigitPatch4x4UnigramModel;
+import com.markovai.server.ai.Patch4x4FeedbackConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -14,11 +15,27 @@ public class Patch4x4Node implements DigitFactorNode {
     private static final Logger logger = LoggerFactory.getLogger(Patch4x4Node.class);
 
     private final String id;
-    private final CachedMarkovChainEvaluator evaluator;
+    private final DigitPatch4x4UnigramModel model;
+    private final double smoothingLambda;
+    private Patch4x4FeedbackConfig feedbackCfg;
 
-    public Patch4x4Node(String id, CachedMarkovChainEvaluator evaluator) {
+    public Patch4x4FeedbackConfig getFeedbackConfig() {
+        return feedbackCfg;
+    }
+
+    // Adjustment table: [digit][symbol]
+    // 0..65535 symbols. 10 digits.
+    private final double[][] adj = new double[10][65536];
+
+    public Patch4x4Node(String id, DigitPatch4x4UnigramModel model, double smoothingLambda,
+            Patch4x4FeedbackConfig feedbackCfg) {
         this.id = id;
-        this.evaluator = evaluator;
+        this.model = model;
+        this.smoothingLambda = smoothingLambda;
+        this.feedbackCfg = feedbackCfg;
+        if (feedbackCfg == null) {
+            throw new IllegalArgumentException("feedbackCfg cannot be null");
+        }
     }
 
     @Override
@@ -33,16 +50,42 @@ public class Patch4x4Node implements DigitFactorNode {
 
     @Override
     public NodeResult computeForImage(DigitImage img, Map<String, NodeResult> childResults) {
-        // Binarize and flatten
-        int[][] binary2D = DigitMarkovModel.binarize(img.pixels, 128);
-        byte[] binaryFlat = new byte[784];
-        for (int r = 0; r < 28; r++) {
-            for (int c = 0; c < 28; c++) {
-                binaryFlat[r * 28 + c] = (byte) binary2D[r][c];
+        int[] symbols = extractPatchSymbols(img);
+        int nSteps = symbols.length; // Should be 49
+
+        double[] smoothedSum = new double[10];
+
+        for (int d = 0; d < 10; d++) {
+            double prevLp = 0.0;
+            boolean first = true;
+            double sum = 0.0;
+
+            for (int symbol : symbols) {
+                double baseLp = model.logProbForSymbol(d, symbol);
+
+                // Apply feedback adjustment if enabled
+                if (feedbackCfg.enabled) {
+                    baseLp += feedbackCfg.adjScale * adj[d][symbol];
+                }
+
+                double lp = baseLp;
+
+                if (first) {
+                    sum += lp;
+                    first = false;
+                } else {
+                    double diff = lp - prevLp;
+                    sum += lp - smoothingLambda * Math.abs(diff);
+                }
+                prevLp = lp;
             }
+            smoothedSum[d] = sum;
         }
 
-        double[] avgLogL = evaluator.evaluate(img.imageRelPath, img.imageHash, binaryFlat);
+        double[] avgLogL = new double[10];
+        for (int d = 0; d < 10; d++) {
+            avgLogL[d] = smoothedSum[d] / nSteps;
+        }
 
         if (logger.isDebugEnabled()) {
             double minAvg = Double.MAX_VALUE;
@@ -58,5 +101,93 @@ public class Patch4x4Node implements DigitFactorNode {
         }
 
         return new NodeResult(avgLogL);
+    }
+
+    public int[] extractPatchSymbols(DigitImage img) {
+        // Binarize
+        int[][] binary2D = DigitMarkovModel.binarize(img.pixels, 128);
+
+        int[] symbols = new int[49];
+        int idx = 0;
+        for (int r = 0; r < 7; r++) {
+            for (int c = 0; c < 7; c++) {
+                symbols[idx++] = DigitPatch4x4UnigramModel.encodePatch(binary2D, r * 4, c * 4);
+            }
+        }
+        return symbols;
+    }
+
+    public void setFeedbackConfig(Patch4x4FeedbackConfig newConfig) {
+        if (newConfig == null) {
+            throw new IllegalArgumentException("Cannot set null feedback config");
+        }
+        this.feedbackCfg = newConfig;
+    }
+
+    public void applyFeedback(int[] symbols, int trueDigit, int rivalDigit, boolean wasCorrect, double margin) {
+        // Must be enabled overall
+        if (!feedbackCfg.enabled)
+            return;
+
+        // Must have learning specifically enabled
+        if (!feedbackCfg.learningEnabled) {
+            // Scoring is enabled but learning is frozen.
+            return;
+        }
+
+        boolean doUpdate = true;
+        if (feedbackCfg.updateOnlyIfIncorrect && wasCorrect) {
+            doUpdate = false;
+        }
+
+        if (feedbackCfg.useMarginGating) {
+            if (margin >= feedbackCfg.marginTarget) {
+                doUpdate = false;
+            }
+        }
+
+        if (!doUpdate)
+            return;
+
+        double scale = 1.0;
+        if (feedbackCfg.useMarginGating) {
+            scale = (feedbackCfg.marginTarget - margin);
+            if (scale < 0)
+                scale = 0;
+            if (scale > 1.0)
+                scale = 1.0; // clamp
+        }
+
+        for (int s : symbols) {
+            adj[trueDigit][s] += feedbackCfg.eta * scale;
+            adj[rivalDigit][s] -= feedbackCfg.eta * scale;
+
+            double m = feedbackCfg.maxAdjAbs;
+            if (adj[trueDigit][s] > m)
+                adj[trueDigit][s] = m;
+            if (adj[trueDigit][s] < -m)
+                adj[trueDigit][s] = -m;
+            if (adj[rivalDigit][s] > m)
+                adj[rivalDigit][s] = m;
+            if (adj[rivalDigit][s] < -m)
+                adj[rivalDigit][s] = -m;
+        }
+
+        if (logger.isTraceEnabled()) {
+            logger.trace("Feedback update: true={}, rival={}, margin={:.4f}, scale={:.4f}, updated {} symbols",
+                    trueDigit, rivalDigit, margin, scale, symbols.length);
+        }
+    }
+
+    public void applyDecayIfEnabled() {
+        if (feedbackCfg.enabled && feedbackCfg.applyDecayEachEpoch) {
+            double factor = 1.0 - feedbackCfg.decayRate;
+            for (int d = 0; d < 10; d++) {
+                for (int s = 0; s < 65536; s++) {
+                    adj[d][s] *= factor;
+                }
+            }
+            logger.info("Applied decay to Patch4x4 adjustments (factor={})", factor);
+        }
     }
 }

@@ -63,6 +63,7 @@ public class FactorGraphBuilder {
         public List<String> children;
         public Map<String, Double> weights;
         public Double smoothingLambda;
+        public Patch4x4FeedbackConfig feedback;
     }
 
     public static class ConfigRoot {
@@ -102,10 +103,10 @@ public class FactorGraphBuilder {
                         break;
                     case "Patch4x4Node":
                         double lambda = cn.smoothingLambda != null ? cn.smoothingLambda : 0.0;
-                        Patch4x4Evaluator p4Eval = new Patch4x4Evaluator(patch4x4Model, lambda, CHAIN_VERSION);
-                        CachedMarkovChainEvaluator cachedP4 = new CachedMarkovChainEvaluator(p4Eval, imageDao,
-                                resultDao);
-                        node = new Patch4x4Node(cn.id, cachedP4);
+                        Patch4x4FeedbackConfig feedback = cn.feedback != null ? cn.feedback
+                                : Patch4x4FeedbackConfig.disabled();
+                        // Note: Bypassing CachedMarkovChainEvaluator for online learning node
+                        node = new Patch4x4Node(cn.id, patch4x4Model, lambda, feedback);
                         break;
                     case "WeightedSumNode":
                         // Children wired later

@@ -20,16 +20,12 @@ public class MarkovFieldDigitClassifier {
         this.root = root;
     }
 
-    public int classify(DigitImage img) {
+    public ClassificationResult classifyWithDetails(DigitImage img) {
         // Compute bottom-up results
-        // For a general DAG, topological sort is best.
-        // For simplicity and our tree structure, recursive memoization works well.
         Map<String, NodeResult> results = new HashMap<>();
-
         NodeResult rootRes = computeRecursive(root, img, results);
 
         double[] totalLogL = rootRes.logLikelihoodsPerDigit;
-
         int bestDigit = -1;
         double bestLogL = Double.NEGATIVE_INFINITY;
 
@@ -39,8 +35,11 @@ public class MarkovFieldDigitClassifier {
                 bestDigit = d;
             }
         }
+        return new ClassificationResult(bestDigit, totalLogL, null);
+    }
 
-        return bestDigit;
+    public int classify(DigitImage img) {
+        return classifyWithDetails(img).getPredictedDigit();
     }
 
     private NodeResult computeRecursive(DigitFactorNode node, DigitImage img, Map<String, NodeResult> memo) {
@@ -71,23 +70,98 @@ public class MarkovFieldDigitClassifier {
         return res;
     }
 
-    public void evaluateAccuracy(List<DigitImage> testData) {
-        logger.info("Evaluating MRF accuracy on {} test images...", testData.size());
+    public void evaluateAccuracy(List<DigitImage> testData, boolean isTestSet) {
+        logger.info("Evaluating MRF accuracy on {} images (isTestSet={})...", testData.size(), isTestSet);
+
+        com.markovai.server.ai.hierarchy.Patch4x4Node p4Node = findPatch4x4Node();
+
+        // LEAKAGE GUARD
+        if (isTestSet && p4Node != null && p4Node.getFeedbackConfig().learningEnabled) {
+            throw new IllegalStateException(
+                    "LEAKAGE PREVENTION: Feedback learning is active but dataset is marked as TEST. Stopping evaluation to prevent contamination.");
+        }
+
+        // Try to apply decay at start of epoch/eval if applicable
+        if (p4Node != null) {
+            p4Node.applyDecayIfEnabled();
+        }
+
         int correct = 0;
         int total = 0;
+        int feedbackUpdates = 0;
 
         for (DigitImage img : testData) {
-            int predicted = classify(img);
-            if (predicted == img.label) {
+            ClassificationResult result = classifyWithDetails(img);
+            int predicted = result.getPredictedDigit();
+            int trueDigit = img.label;
+
+            if (predicted == trueDigit) {
                 correct++;
             }
             total++;
+
+            // Feedback Loop
+            if (p4Node != null) {
+                double[] scores = result.getLogLikelihoods();
+                int rivalDigit = -1;
+                double rivalScore = Double.NEGATIVE_INFINITY;
+                for (int d = 0; d < 10; d++) {
+                    if (d == trueDigit)
+                        continue;
+                    if (scores[d] > rivalScore) {
+                        rivalScore = scores[d];
+                        rivalDigit = d;
+                    }
+                }
+                double margin = scores[trueDigit] - rivalScore;
+                boolean wasCorrect = (predicted == trueDigit);
+
+                int[] symbols = p4Node.extractPatchSymbols(img);
+                p4Node.applyFeedback(symbols, trueDigit, rivalDigit, wasCorrect, margin);
+                if (p4Node.getFeedbackConfig().learningEnabled) {
+                    feedbackUpdates++;
+                }
+            }
+
             if (total % 1000 == 0) {
                 logger.info("MRF Evaluated {}/{}...", total, testData.size());
             }
         }
 
         double accuracy = (double) correct / total;
-        logger.info("MRF Evaluation complete. Accuracy: {:.4f} ({}/{})", accuracy, correct, total);
+        if (p4Node != null && p4Node.getFeedbackConfig().enabled) {
+            logger.info("MRF Evaluation complete. Accuracy: {} ({}/{}) [Feedback Updates: {}]",
+                    String.format("%.4f", accuracy), correct, total, feedbackUpdates);
+        } else {
+            logger.info("MRF Evaluation complete. Accuracy: {} ({}/{})",
+                    String.format("%.4f", accuracy), correct, total);
+        }
+    }
+
+    public void setPatch4x4Config(com.markovai.server.ai.Patch4x4FeedbackConfig config) {
+        com.markovai.server.ai.hierarchy.Patch4x4Node node = findPatch4x4Node();
+        if (node != null) {
+            node.setFeedbackConfig(config);
+            logger.info("Updated Patch4x4 feedback config: enabled={}, learningEnabled={}",
+                    config.enabled, config.learningEnabled);
+        } else {
+            logger.warn("Cannot set Patch4x4 config: Node not found in graph.");
+        }
+    }
+
+    private com.markovai.server.ai.hierarchy.Patch4x4Node findPatch4x4Node() {
+        return findNodeRecursive(root, "patch4x4");
+    }
+
+    private com.markovai.server.ai.hierarchy.Patch4x4Node findNodeRecursive(DigitFactorNode current, String targetId) {
+        if (current instanceof com.markovai.server.ai.hierarchy.Patch4x4Node && current.getId().equals(targetId)) {
+            return (com.markovai.server.ai.hierarchy.Patch4x4Node) current;
+        }
+        for (DigitFactorNode child : current.getChildren()) {
+            com.markovai.server.ai.hierarchy.Patch4x4Node found = findNodeRecursive(child, targetId);
+            if (found != null)
+                return found;
+        }
+        return null;
     }
 }

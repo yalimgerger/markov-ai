@@ -15,7 +15,19 @@
         {
             "id": "patch4x4",
             "type": "Patch4x4Node",
-            "smoothingLambda": 0.3
+            "smoothingLambda": 0.3,
+            "feedback": {
+                "enabled": false,
+                "learningEnabled": false,
+                "adjScale": 0.10,
+                "eta": 0.003,
+                "marginTarget": 0.02,
+                "updateOnlyIfIncorrect": true,
+                "useMarginGating": true,
+                "maxAdjAbs": 5.0,
+                "applyDecayEachEpoch": false,
+                "decayRate": 1.0e-4
+            }
         },
         {
             "id": "root",

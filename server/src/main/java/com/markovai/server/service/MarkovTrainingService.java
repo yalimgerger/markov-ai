@@ -25,6 +25,10 @@ import java.util.Map;
 public class MarkovTrainingService {
 
     private static final Logger logger = LoggerFactory.getLogger(MarkovTrainingService.class);
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.context.ConfigurableApplicationContext context;
+
     private final RowColumnDigitClassifier model = new RowColumnDigitClassifier();
     private final com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model = new com.markovai.server.ai.DigitPatch4x4UnigramModel();
     private boolean isReady = false;
@@ -62,58 +66,44 @@ public class MarkovTrainingService {
                 logger.info("4x4 Patch Model Trained.");
 
                 if (!testingData.isEmpty()) {
-                    // Legacy Evaluation
-                    model.evaluateAccuracy(testingData);
+                    boolean runVerification = "true".equalsIgnoreCase(System.getProperty("verifyFeedbackNoLeakage"));
 
-                    // MRF Evaluation
-                    try (InputStream is = getClass().getResourceAsStream("/mrf_config.json")) {
-                        if (is != null) {
-                            FactorGraphBuilder builder = new FactorGraphBuilder(
-                                    model.getRowModel(), model.getColumnModel(), model.getPatchModel(),
-                                    model.getRowExtractor(), model.getColumnExtractor(), model.getPatchExtractor(),
-                                    patch4x4Model);
+                    if (runVerification) {
+                        runLeakageFreeVerification(model, testingData, trainingData, patch4x4Model);
+                    } else {
+                        // Legacy Evaluation
+                        model.evaluateAccuracy(testingData);
 
-                            // Naive config root resolution
-                            // Re-parsing to find root ID or let Builder handle it?
-                            // Builder returns Map<String, Node>, we need root ID.
-                            // I'll update Builder to just return Root or a Result object, or parse JSON
-                            // separately?
-                            // Actually Builder.build returns Map. I need to find the root.
-                            // Let's reload config to get root ID or just ask Builder to return it.
-                            // To keep it simple, I'll modify Builder to assume root is returned or
-                            // accessible.
-                            // Wait, I designed Builder to return Map. I can just parse config here to get
-                            // root ID, or modify Builder.
+                        // MRF Evaluation
+                        try (InputStream is = getClass().getResourceAsStream("/mrf_config.json")) {
+                            if (is != null) {
+                                FactorGraphBuilder builder = new FactorGraphBuilder(
+                                        model.getRowModel(), model.getColumnModel(), model.getPatchModel(),
+                                        model.getRowExtractor(), model.getColumnExtractor(), model.getPatchExtractor(),
+                                        patch4x4Model);
 
-                            // Better: Let's use the ObjectMapper here to get the root ID quickly
-                            // OR update FactorGraphBuilder to return a graph object containing root.
-                            // Since I can't easily change Builder signature in replace_file cleanly without
-                            // seeing it,
-                            // I'll assume I can read the JSON again or use a helper.
+                                ObjectMapper mapper = new ObjectMapper();
+                                FactorGraphBuilder.ConfigRoot config = mapper.readValue(
+                                        getClass().getResourceAsStream("/mrf_config.json"),
+                                        FactorGraphBuilder.ConfigRoot.class);
 
-                            // Actually, I'll just change FactorGraphBuilder to return a Graph structure in
-                            // a separate file or just parse locally.
-                            // Let's stick with parsing here to get root ID.
-                            ObjectMapper mapper = new ObjectMapper();
-                            FactorGraphBuilder.ConfigRoot config = mapper.readValue(
-                                    getClass().getResourceAsStream("/mrf_config.json"),
-                                    FactorGraphBuilder.ConfigRoot.class);
+                                Map<String, DigitFactorNode> nodes = builder
+                                        .build(getClass().getResourceAsStream("/mrf_config.json"));
+                                DigitFactorNode root = nodes.get(config.rootNodeId);
 
-                            Map<String, DigitFactorNode> nodes = builder
-                                    .build(getClass().getResourceAsStream("/mrf_config.json"));
-                            DigitFactorNode root = nodes.get(config.rootNodeId);
-
-                            if (root != null) {
-                                MarkovFieldDigitClassifier mrf = new MarkovFieldDigitClassifier(root);
-                                mrf.evaluateAccuracy(testingData);
+                                if (root != null) {
+                                    MarkovFieldDigitClassifier mrf = new MarkovFieldDigitClassifier(root);
+                                    // Default evaluation on test set (treat as test)
+                                    mrf.evaluateAccuracy(testingData, true);
+                                } else {
+                                    logger.error("MRF Root node not found: {}", config.rootNodeId);
+                                }
                             } else {
-                                logger.error("MRF Root node not found: {}", config.rootNodeId);
+                                logger.error("mrf_config.json not found!");
                             }
-                        } else {
-                            logger.error("mrf_config.json not found!");
+                        } catch (Exception ex) {
+                            logger.error("Failed to init MRF", ex);
                         }
-                    } catch (Exception ex) {
-                        logger.error("Failed to init MRF", ex);
                     }
                 }
 
@@ -231,4 +221,82 @@ public class MarkovTrainingService {
         }
     }
 
+    private void runLeakageFreeVerification(RowColumnDigitClassifier model, List<DigitImage> testData,
+            List<DigitImage> trainData, com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model) {
+        logger.info("============================================================");
+        logger.info("STARTING LEAKAGE-FREE VERIFICATION PROTOCOL");
+        logger.info("============================================================");
+
+        try {
+            // 1. Build MRF
+            FactorGraphBuilder builder = new FactorGraphBuilder(
+                    model.getRowModel(), model.getColumnModel(), model.getPatchModel(),
+                    model.getRowExtractor(), model.getColumnExtractor(), model.getPatchExtractor(),
+                    patch4x4Model);
+
+            ObjectMapper mapper = new ObjectMapper();
+            FactorGraphBuilder.ConfigRoot configRoot = mapper.readValue(
+                    getClass().getResourceAsStream("/mrf_config.json"),
+                    FactorGraphBuilder.ConfigRoot.class);
+            Map<String, DigitFactorNode> nodes = builder.build(getClass().getResourceAsStream("/mrf_config.json"));
+            DigitFactorNode root = nodes.get(configRoot.rootNodeId);
+            if (root == null)
+                throw new RuntimeException("Root node not found");
+
+            MarkovFieldDigitClassifier mrf = new MarkovFieldDigitClassifier(root);
+
+            // 2. Phase A: Baseline (Feedback Disabled)
+            logger.info("PHASE A: Baseline Test Accuracy (Feedback Disabled)");
+            com.markovai.server.ai.Patch4x4FeedbackConfig baselineCfg = com.markovai.server.ai.Patch4x4FeedbackConfig
+                    .disabled();
+            mrf.setPatch4x4Config(baselineCfg);
+            mrf.evaluateAccuracy(testData, true);
+
+            // 3. Phase B: Adaptation (Feedback Enabled, Learning Enabled) on TRAIN subset
+            // Split train data: Use first 2000 images for adaptation
+            int adaptSize = Math.min(2000, trainData.size());
+            List<DigitImage> adaptSet = trainData.subList(0, adaptSize);
+            logger.info("PHASE B: Adaptation on TRAIN subset ({} images). Feedback Learning ENABLED.", adaptSize);
+
+            // Enable feedback and learning
+            // We clone the default config or create one, but enabling everything.
+            // Let's assume the JSON had defaults we want, but force
+            // enabled/learningEnabled.
+            com.markovai.server.ai.Patch4x4FeedbackConfig adaptationCfg = new com.markovai.server.ai.Patch4x4FeedbackConfig(
+                    true, true, // enabled, learningEnabled
+                    0.10, 0.003, 0.02, true, true, 5.0, false, 1.0e-4 // heuristics or defaults
+            );
+            mrf.setPatch4x4Config(adaptationCfg);
+
+            // Run evaluation on ADAPT set (isTestSet=false)
+            mrf.evaluateAccuracy(adaptSet, false);
+            logger.info("Adaptation complete.");
+
+            // 4. Phase C: Final Test (Feedback Enabled, Learning FROZEN)
+            logger.info("PHASE C: Final Test Accuracy (Feedback Scoring Enabled, Learning Frozen)");
+
+            com.markovai.server.ai.Patch4x4FeedbackConfig finalCfg = new com.markovai.server.ai.Patch4x4FeedbackConfig(
+                    true, false, // enabled, learningEnabled=FALSE
+                    0.10, 0.003, 0.02, true, true, 5.0, false, 1.0e-4);
+            mrf.setPatch4x4Config(finalCfg);
+
+            // Run on Test Data (isTestSet=true) - This should pass the guard because
+            // learning is disabled
+            mrf.evaluateAccuracy(testData, true);
+
+            logger.info("============================================================");
+            logger.info("VERIFICATION PROTOCOL COMPLETE");
+            logger.info("============================================================");
+
+            // Force shutdown since we are in a CLI-like verification mode
+            if (context != null) {
+                logger.info("Shutting down application...");
+                context.close();
+                System.exit(0);
+            }
+
+        } catch (Exception e) {
+            logger.error("Verification failed", e);
+        }
+    }
 }

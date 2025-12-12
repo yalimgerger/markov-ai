@@ -46,3 +46,13 @@ tasks.register<JavaExec>("precompute") {
     classpath = sourceSets["main"].runtimeClasspath
     mainClass.set("com.markovai.server.tools.DigitDatasetPrecompute")
 }
+
+tasks.named<org.springframework.boot.gradle.tasks.run.BootRun>("bootRun") {
+    // Pass the verification flag if present
+    val propName = "verifyFeedbackNoLeakage"
+    if (System.getProperty(propName) != null) {
+        systemProperty(propName, System.getProperty(propName))
+    }
+    // Increase heap size to handle dataset
+    maxHeapSize = "2g"
+}
