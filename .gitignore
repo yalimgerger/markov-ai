@@ -30,3 +30,8 @@ dist/
 
 # Large Datasets
 server/src/main/resources/mnist/
+
+# Database
+markiv_cache_db
+markov_cache_db
+*.db
