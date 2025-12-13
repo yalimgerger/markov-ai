@@ -52,6 +52,16 @@ public class MarkovTrainingService {
                 List<DigitImage> trainingData = loadImages("classpath:mnist/training/*/*.png");
                 List<DigitImage> testingData = loadImages("classpath:mnist/testing/*/*.png");
 
+                logger.info("Dataset loaded: trainExamples={}, testExamples={}", trainingData.size(),
+                        testingData.size());
+
+                if (trainingData.size() != 60000) {
+                    logger.warn("Training dataset size ({}) deviates from expected 60000", trainingData.size());
+                }
+                if (testingData.size() != 10000) {
+                    logger.warn("Testing dataset size ({}) deviates from expected 10000", testingData.size());
+                }
+
                 if (trainingData.isEmpty()) {
                     logger.error("No training data found!");
                     return;
@@ -77,8 +87,16 @@ public class MarkovTrainingService {
                             || (appArgs != null && appArgs.containsOption("verifyFeedbackSweep")
                                     && "true".equalsIgnoreCase(appArgs.getOptionValues("verifyFeedbackSweep").get(0)));
 
+                    boolean runMultiSeed = "true"
+                            .equalsIgnoreCase(System.getProperty("verifyFeedbackNoLeakageMultiSeed"))
+                            || (appArgs != null && appArgs.containsOption("verifyFeedbackNoLeakageMultiSeed") && "true"
+                                    .equalsIgnoreCase(
+                                            appArgs.getOptionValues("verifyFeedbackNoLeakageMultiSeed").get(0)));
+
                     if (runSweep) {
                         runFeedbackSweep(model, trainingData, testingData, patch4x4Model);
+                    } else if (runMultiSeed) {
+                        runLeakageFreeMultiSeedVerification(model, testingData, trainingData, patch4x4Model);
                     } else if (runVerification) {
                         runLeakageFreeVerification(model, testingData, trainingData, patch4x4Model);
                     } else {
@@ -128,11 +146,13 @@ public class MarkovTrainingService {
 
     private List<DigitImage> loadImages(String pattern) throws IOException {
         List<DigitImage> images = new ArrayList<>();
+        java.util.Set<String> loadedHashes = new java.util.HashSet<>();
+
         PathMatchingResourcePatternResolver resolver = new PathMatchingResourcePatternResolver();
         String searchPattern = (pattern != null) ? pattern : "";
         Resource[] resources = resolver.getResources(searchPattern);
 
-        logger.info("Found {} image files for pattern: {}", resources.length, pattern);
+        logger.info("Found {} image resources for pattern: {}", resources.length, pattern);
 
         for (Resource res : resources) {
             try (InputStream is = res.getInputStream()) {
@@ -157,6 +177,15 @@ public class MarkovTrainingService {
                     }
                 }
 
+                String hash = computeHash(pixels);
+                // Deduplicate based on content hash
+                if (hash != null && loadedHashes.contains(hash)) {
+                    continue;
+                }
+                if (hash != null) {
+                    loadedHashes.add(hash);
+                }
+
                 // Extract label from parent directory name
                 // Format: .../mnist/training/5/img.png -> label is 5
                 int label = -1;
@@ -164,10 +193,6 @@ public class MarkovTrainingService {
                 try {
                     String path = res.getURL().getPath();
                     String[] parts = path.split("/");
-                    // Expected structure ending: .../mnist/training/5/filename.png
-                    // We want to extract e.g. "training/5/filename.png" or "testing/5/filename.png"
-                    // Find "mnist" index and take substring?
-                    // Or finding "training" or "testing"
 
                     int idx = -1;
                     for (int i = 0; i < parts.length; i++) {
@@ -197,8 +222,6 @@ public class MarkovTrainingService {
                 } catch (Exception e) {
                     logger.warn("Could not determine metadata for {}", res.getDescription());
                 }
-
-                String hash = computeHash(pixels);
 
                 images.add(new DigitImage(pixels, label, relPath, hash));
             } catch (Exception e) {
@@ -232,76 +255,122 @@ public class MarkovTrainingService {
         }
     }
 
-    private void runLeakageFreeVerification(RowColumnDigitClassifier model, List<DigitImage> testData,
+    private static class LeakageFreeResult {
+        long seed;
+        double baselineAcc;
+        double frozenAcc;
+
+        public LeakageFreeResult(long seed, double baselineAcc, double frozenAcc) {
+            this.seed = seed;
+            this.baselineAcc = baselineAcc;
+            this.frozenAcc = frozenAcc;
+        }
+
+        public double getDelta() {
+            return frozenAcc - baselineAcc;
+        }
+    }
+
+    private void runLeakageFreeMultiSeedVerification(RowColumnDigitClassifier model, List<DigitImage> testData,
             List<DigitImage> trainData, com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model) {
         logger.info("============================================================");
-        logger.info("STARTING LEAKAGE-FREE VERIFICATION PROTOCOL");
+        logger.info("STARTING MULTI-SEED LEAKAGE-FREE VERIFICATION");
         logger.info("============================================================");
 
         try {
-            // 1. Build MRF
-            FactorGraphBuilder builder = new FactorGraphBuilder(
-                    model.getRowModel(), model.getColumnModel(), model.getPatchModel(),
-                    model.getRowExtractor(), model.getColumnExtractor(), model.getPatchExtractor(),
-                    patch4x4Model);
+            // Parse seeds
+            String seedsStr = System.getProperty("adaptSeeds");
+            long[] seeds;
+            if (seedsStr != null && !seedsStr.isEmpty()) {
+                String[] parts = seedsStr.split(",");
+                seeds = new long[parts.length];
+                for (int i = 0; i < parts.length; i++) {
+                    seeds[i] = Long.parseLong(parts[i].trim());
+                }
+            } else {
+                seeds = new long[] { 12345L, 22222L, 33333L, 44444L, 55555L };
+            }
 
-            ObjectMapper mapper = new ObjectMapper();
-            FactorGraphBuilder.ConfigRoot configRoot = mapper.readValue(
-                    getClass().getResourceAsStream("/mrf_config.json"),
-                    FactorGraphBuilder.ConfigRoot.class);
-            Map<String, DigitFactorNode> nodes = builder.build(getClass().getResourceAsStream("/mrf_config.json"));
-            DigitFactorNode root = nodes.get(configRoot.rootNodeId);
-            if (root == null)
-                throw new RuntimeException("Root node not found");
+            List<LeakageFreeResult> results = new ArrayList<>();
+            // Compute baseline once to be efficient? No, strict requirement is full reset.
+            // We will run the full protocol for each seed.
 
-            MarkovFieldDigitClassifier mrf = new MarkovFieldDigitClassifier(root);
+            for (long seed : seeds) {
+                logger.info("Running protocol for seed={}", seed);
+                LeakageFreeResult result = performLeakageFreeProtocol(model, testData, trainData, patch4x4Model, seed,
+                        false);
+                results.add(result);
+                logger.info("Seed={}  Baseline={:.4f}  Frozen={:.4f}  Delta={:+.4f}",
+                        seed, result.baselineAcc, result.frozenAcc, result.getDelta());
+            }
 
-            // Get base config from file
-            com.markovai.server.ai.Patch4x4FeedbackConfig baseConfig = getBaseConfigFromFile();
+            // Statistics
+            double sumFrozen = 0;
+            double sumDelta = 0;
+            double minDelta = Double.MAX_VALUE;
+            double maxDelta = -Double.MAX_VALUE;
 
-            // 2. Phase A: Baseline (Feedback Disabled)
-            logger.info("PHASE A: Baseline Test Accuracy (Feedback Disabled)");
-            com.markovai.server.ai.Patch4x4FeedbackConfig baselineCfg = baseConfig.copy();
-            baselineCfg.enabled = false;
-            mrf.setPatch4x4Config(baselineCfg);
-            mrf.evaluateAccuracy(testData, true);
+            for (LeakageFreeResult r : results) {
+                sumFrozen += r.frozenAcc;
+                double d = r.getDelta();
+                sumDelta += d;
+                if (d < minDelta)
+                    minDelta = d;
+                if (d > maxDelta)
+                    maxDelta = d;
+            }
 
-            // 3. Phase B: Adaptation (Feedback Enabled, Learning Enabled) on TRAIN subset
-            // Deterministic sampling
-            int adaptSize = 2000;
-            List<DigitImage> adaptSet = selectAdaptationSubset(trainData, adaptSize, 12345L);
-            logger.info("PHASE B: Adaptation on TRAIN subset ({} images). Feedback Learning ENABLED.", adaptSet.size());
+            double meanFrozen = sumFrozen / results.size();
+            double meanDelta = sumDelta / results.size();
 
-            // Enable feedback and learning
-            com.markovai.server.ai.Patch4x4FeedbackConfig adaptationCfg = baseConfig.copy();
-            adaptationCfg.enabled = true;
-            adaptationCfg.learningEnabled = true;
-            mrf.setPatch4x4Config(adaptationCfg);
+            double varFrozen = 0;
+            double varDelta = 0;
+            for (LeakageFreeResult r : results) {
+                varFrozen += Math.pow(r.frozenAcc - meanFrozen, 2);
+                varDelta += Math.pow(r.getDelta() - meanDelta, 2);
+            }
+            double stdFrozen = (results.size() > 1) ? Math.sqrt(varFrozen / (results.size() - 1)) : 0.0;
+            double stdDelta = (results.size() > 1) ? Math.sqrt(varDelta / (results.size() - 1)) : 0.0;
 
-            // Reset MRF state before adaptation (just in case, though it's fresh here)
-            // But we actually want to ensure the node state is clean. The MRF was just
-            // built, so it is clean.
+            System.out.println("\n=== MULTI-SEED LEAKAGE-FREE SUMMARY ===");
+            System.out.printf("Seeds: %d  AdaptSize: 2000%n", results.size());
+            System.out.printf("FrozenAcc mean=%.4f std=%.4f%n", meanFrozen, stdFrozen);
+            System.out.printf("Delta     mean=%+.4f std=%.4f min=%+.4f max=%+.4f%n", meanDelta, stdDelta, minDelta,
+                    maxDelta);
 
-            // Run evaluation on ADAPT set (isTestSet=false)
-            mrf.evaluateAccuracy(adaptSet, false);
-            logger.info("Adaptation complete.");
+            System.out.println("\n=== CSV OUTPUT ===");
+            System.out.println("seed,baselineAcc,frozenAcc,delta");
+            for (LeakageFreeResult r : results) {
+                System.out.printf("%d,%.4f,%.4f,%.4f%n", r.seed, r.baselineAcc, r.frozenAcc, r.getDelta());
+            }
 
-            // 4. Phase C: Final Test (Feedback Enabled, Learning FROZEN)
-            logger.info("PHASE C: Final Test Accuracy (Feedback Scoring Enabled, Learning Frozen)");
+            logger.info("============================================================");
+            logger.info("MULTI-SEED VERIFICATION COMPLETE");
+            logger.info("============================================================");
 
-            com.markovai.server.ai.Patch4x4FeedbackConfig finalCfg = baseConfig.copy();
-            finalCfg.enabled = true;
-            finalCfg.learningEnabled = false;
-            mrf.setPatch4x4Config(finalCfg);
+            if (context != null) {
+                context.close();
+                System.exit(0);
+            }
 
-            // Run on Test Data (isTestSet=true)
-            mrf.evaluateAccuracy(testData, true);
+        } catch (Exception e) {
+            logger.error("Multi-seed verification failed", e);
+        }
+    }
+
+    private void runLeakageFreeVerification(RowColumnDigitClassifier model, List<DigitImage> testData,
+            List<DigitImage> trainData, com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model) {
+        logger.info("============================================================");
+        logger.info("STARTING LEAKAGE-FREE VERIFICATION PROTOCOL (Single Seed)");
+        logger.info("============================================================");
+
+        try {
+            performLeakageFreeProtocol(model, testData, trainData, patch4x4Model, 12345L, true);
 
             logger.info("============================================================");
             logger.info("VERIFICATION PROTOCOL COMPLETE");
             logger.info("============================================================");
 
-            // Force shutdown since we are in a CLI-like verification mode
             if (context != null) {
                 logger.info("Shutting down application...");
                 context.close();
@@ -311,6 +380,87 @@ public class MarkovTrainingService {
         } catch (Exception e) {
             logger.error("Verification failed", e);
         }
+    }
+
+    private LeakageFreeResult performLeakageFreeProtocol(RowColumnDigitClassifier model, List<DigitImage> testData,
+            List<DigitImage> trainData, com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model,
+            long seed, boolean verbose) throws Exception {
+
+        // 1. Build MRF
+        FactorGraphBuilder builder = new FactorGraphBuilder(
+                model.getRowModel(), model.getColumnModel(), model.getPatchModel(),
+                model.getRowExtractor(), model.getColumnExtractor(), model.getPatchExtractor(),
+                patch4x4Model);
+
+        ObjectMapper mapper = new ObjectMapper();
+        FactorGraphBuilder.ConfigRoot configRoot = mapper.readValue(
+                getClass().getResourceAsStream("/mrf_config.json"),
+                FactorGraphBuilder.ConfigRoot.class);
+        Map<String, DigitFactorNode> nodes = builder.build(getClass().getResourceAsStream("/mrf_config.json"));
+        DigitFactorNode root = nodes.get(configRoot.rootNodeId);
+        if (root == null)
+            throw new RuntimeException("Root node not found");
+
+        MarkovFieldDigitClassifier mrf = new MarkovFieldDigitClassifier(root);
+
+        // Define canonical datasets
+        List<DigitImage> phaseATest = testData;
+        int adaptSize = 2000;
+        List<DigitImage> phaseBAdapt = selectAdaptationSubset(trainData, adaptSize, seed);
+        List<DigitImage> phaseCTest = testData;
+
+        // Validate Integrity
+        validateNoOverlap(phaseBAdapt, phaseCTest);
+
+        if (verbose) {
+            logger.info("Leakage-free protocol dataset summary (Seed={}):", seed);
+            logger.info("  Train size: {}", trainData.size());
+            logger.info("  Test size:  {}", testData.size());
+            logger.info("  Adapt size: {}", phaseBAdapt.size());
+            logger.info("  Phase A eval size: {}", phaseATest.size());
+            logger.info("  Phase C eval size: {}", phaseCTest.size());
+        }
+
+        // Get base config from file
+        com.markovai.server.ai.Patch4x4FeedbackConfig baseConfig = getBaseConfigFromFile();
+
+        // 2. Phase A: Baseline (Feedback Disabled)
+        if (verbose)
+            logger.info("PHASE A: Baseline Test Accuracy (Feedback Disabled)");
+        com.markovai.server.ai.Patch4x4FeedbackConfig baselineCfg = baseConfig.copy();
+        baselineCfg.enabled = false;
+        mrf.setPatch4x4Config(baselineCfg);
+        double baselineAcc = mrf.evaluateAccuracy(phaseATest, true);
+
+        // 3. Phase B: Adaptation (Feedback Enabled, Learning Enabled) on TRAIN subset
+        if (verbose)
+            logger.info("PHASE B: Adaptation on TRAIN subset ({} images). Feedback Learning ENABLED.",
+                    phaseBAdapt.size());
+
+        // Enable feedback and learning
+        com.markovai.server.ai.Patch4x4FeedbackConfig adaptationCfg = baseConfig.copy();
+        adaptationCfg.enabled = true;
+        adaptationCfg.learningEnabled = true;
+        mrf.setPatch4x4Config(adaptationCfg);
+
+        // Run evaluation on ADAPT set (isTestSet=false)
+        mrf.evaluateAccuracy(phaseBAdapt, false);
+        if (verbose)
+            logger.info("Adaptation complete.");
+
+        // 4. Phase C: Final Test (Feedback Enabled, Learning FROZEN)
+        if (verbose)
+            logger.info("PHASE C: Final Test Accuracy (Feedback Scoring Enabled, Learning Frozen)");
+
+        com.markovai.server.ai.Patch4x4FeedbackConfig finalCfg = baseConfig.copy();
+        finalCfg.enabled = true;
+        finalCfg.learningEnabled = false;
+        mrf.setPatch4x4Config(finalCfg);
+
+        // Run on Test Data (isTestSet=true)
+        double frozenAcc = mrf.evaluateAccuracy(phaseCTest, true);
+
+        return new LeakageFreeResult(seed, baselineAcc, frozenAcc);
     }
 
     private void runFeedbackSweep(RowColumnDigitClassifier model, List<DigitImage> trainData, List<DigitImage> testData,
@@ -487,5 +637,26 @@ public class MarkovTrainingService {
         List<DigitImage> copy = new ArrayList<>(trainData);
         java.util.Collections.shuffle(copy, new java.util.Random(seed));
         return copy.subList(0, Math.min(adaptSize, copy.size()));
+    }
+
+    private void validateNoOverlap(List<DigitImage> adaptSet, List<DigitImage> testSet) {
+        java.util.Set<String> adaptHashes = new java.util.HashSet<>();
+        for (DigitImage img : adaptSet) {
+            if (img.imageHash != null)
+                adaptHashes.add(img.imageHash);
+        }
+
+        int overlapCount = 0;
+        for (DigitImage img : testSet) {
+            if (img.imageHash != null && adaptHashes.contains(img.imageHash)) {
+                overlapCount++;
+            }
+        }
+
+        if (overlapCount > 0) {
+            logger.error("DATA LEAKAGE DETECTED: {} images in adaptation set are also in the test set!", overlapCount);
+            throw new IllegalStateException("Data leakage detected: adaptation set overlaps with test set.");
+        }
+        logger.info("Data integrity check passed: 0 overlaps between adaptation set and test set.");
     }
 }
