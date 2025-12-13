@@ -26,7 +26,12 @@
                 "useMarginGating": true,
                 "maxAdjAbs": 5.0,
                 "applyDecayEachEpoch": false,
-                "decayRate": 1.0e-4
+                "decayRate": 1.0e-4,
+                "frequencyScalingEnabled": false,
+                "frequencyScalingMode": "GLOBAL_SQRT",
+                "minUpdateScale": 0.05,
+                "maxUpdateScale": 1.0,
+                "applyDecayEveryNUpdates": 0
             }
         },
         {

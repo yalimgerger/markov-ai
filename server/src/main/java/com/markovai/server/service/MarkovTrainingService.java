@@ -29,6 +29,9 @@ public class MarkovTrainingService {
     @org.springframework.beans.factory.annotation.Autowired
     private org.springframework.context.ConfigurableApplicationContext context;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.boot.ApplicationArguments appArgs;
+
     private final RowColumnDigitClassifier model = new RowColumnDigitClassifier();
     private final com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model = new com.markovai.server.ai.DigitPatch4x4UnigramModel();
     private boolean isReady = false;
@@ -66,9 +69,17 @@ public class MarkovTrainingService {
                 logger.info("4x4 Patch Model Trained.");
 
                 if (!testingData.isEmpty()) {
-                    boolean runVerification = "true".equalsIgnoreCase(System.getProperty("verifyFeedbackNoLeakage"));
+                    boolean runVerification = "true".equalsIgnoreCase(System.getProperty("verifyFeedbackNoLeakage"))
+                            || (appArgs != null && appArgs.containsOption("verifyFeedbackNoLeakage") && "true"
+                                    .equalsIgnoreCase(appArgs.getOptionValues("verifyFeedbackNoLeakage").get(0)));
 
-                    if (runVerification) {
+                    boolean runSweep = "true".equalsIgnoreCase(System.getProperty("verifyFeedbackSweep"))
+                            || (appArgs != null && appArgs.containsOption("verifyFeedbackSweep")
+                                    && "true".equalsIgnoreCase(appArgs.getOptionValues("verifyFeedbackSweep").get(0)));
+
+                    if (runSweep) {
+                        runFeedbackSweep(model, trainingData, testingData, patch4x4Model);
+                    } else if (runVerification) {
                         runLeakageFreeVerification(model, testingData, trainingData, patch4x4Model);
                     } else {
                         // Legacy Evaluation
@@ -264,7 +275,8 @@ public class MarkovTrainingService {
             // enabled/learningEnabled.
             com.markovai.server.ai.Patch4x4FeedbackConfig adaptationCfg = new com.markovai.server.ai.Patch4x4FeedbackConfig(
                     true, true, // enabled, learningEnabled
-                    0.10, 0.003, 0.02, true, true, 5.0, false, 1.0e-4 // heuristics or defaults
+                    0.10, 0.003, 0.02, true, true, 5.0, false, 1.0e-4, // heuristics or defaults
+                    false, "GLOBAL_SQRT", 0.05, 1.0, 0 // freq defaults
             );
             mrf.setPatch4x4Config(adaptationCfg);
 
@@ -277,7 +289,8 @@ public class MarkovTrainingService {
 
             com.markovai.server.ai.Patch4x4FeedbackConfig finalCfg = new com.markovai.server.ai.Patch4x4FeedbackConfig(
                     true, false, // enabled, learningEnabled=FALSE
-                    0.10, 0.003, 0.02, true, true, 5.0, false, 1.0e-4);
+                    0.10, 0.003, 0.02, true, true, 5.0, false, 1.0e-4,
+                    false, "GLOBAL_SQRT", 0.05, 1.0, 0);
             mrf.setPatch4x4Config(finalCfg);
 
             // Run on Test Data (isTestSet=true) - This should pass the guard because
@@ -298,5 +311,101 @@ public class MarkovTrainingService {
         } catch (Exception e) {
             logger.error("Verification failed", e);
         }
+    }
+
+    private void runFeedbackSweep(RowColumnDigitClassifier model, List<DigitImage> trainData, List<DigitImage> testData,
+            com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model) {
+        logger.info("============================================================");
+        logger.info("STARTING FEEDBACK HYPERPARAMETER SWEEP");
+        logger.info("============================================================");
+
+        try {
+            // 1. Compute Baseline (Once)
+            logger.info("Computing Baseline Accuracy...");
+            double baselineAcc = evaluateSweepBaseline(model, testData, patch4x4Model);
+            logger.info("Baseline Accuracy: {:.4f}", baselineAcc);
+
+            double[] adjScales = { 0.10, 0.05, 0.02, 0.01 };
+            double[] etas = { 0.003, 0.001, 0.0005 };
+
+            System.out.println("\nRESULTS TABLE:");
+            System.out.println("adjScale\teta\tfreqScaling\tdecayEveryN\tbaselineTest\tadaptedTest");
+
+            for (double scale : adjScales) {
+                for (double eta : etas) {
+                    double adaptedAcc = runSweepIteration(model, trainData, testData, patch4x4Model, scale, eta);
+                    System.out.printf("%.4f\t%.4f\ttrue\t\t5000\t\t%.4f\t\t%.4f%n",
+                            scale, eta, baselineAcc, adaptedAcc);
+                }
+            }
+
+            logger.info("============================================================");
+            logger.info("SWEEP COMPLETE");
+            logger.info("============================================================");
+
+            if (context != null) {
+                context.close();
+                System.exit(0);
+            }
+
+        } catch (Exception e) {
+            logger.error("Sweep failed", e);
+        }
+    }
+
+    private double evaluateSweepBaseline(RowColumnDigitClassifier model, List<DigitImage> testData,
+            com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model) throws Exception {
+        MarkovFieldDigitClassifier mrf = buildMrf(model, patch4x4Model);
+        mrf.setPatch4x4Config(com.markovai.server.ai.Patch4x4FeedbackConfig.disabled());
+        return mrf.evaluateAccuracy(testData, true);
+    }
+
+    private double runSweepIteration(RowColumnDigitClassifier model, List<DigitImage> trainData,
+            List<DigitImage> testData, com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model, double adjScale,
+            double eta) throws Exception {
+
+        // Build Fresh MRF
+        MarkovFieldDigitClassifier mrf = buildMrf(model, patch4x4Model);
+
+        // Adaptation Train Subset (2000)
+        int adaptSize = Math.min(2000, trainData.size());
+        List<DigitImage> adaptSet = trainData.subList(0, adaptSize);
+
+        // Enable Feedback (Adaptation Mode)
+        com.markovai.server.ai.Patch4x4FeedbackConfig adaptationCfg = new com.markovai.server.ai.Patch4x4FeedbackConfig(
+                true, true, // enabled, learningEnabled
+                adjScale, eta, 0.02, true, true, 5.0, false, 1.0e-4,
+                true, "GLOBAL_SQRT", 0.05, 1.0, 5000 // Freq scaling enabled
+        );
+        mrf.setPatch4x4Config(adaptationCfg);
+        mrf.evaluateAccuracy(adaptSet, false);
+
+        // Freeze and Test
+        com.markovai.server.ai.Patch4x4FeedbackConfig finalCfg = new com.markovai.server.ai.Patch4x4FeedbackConfig(
+                true, false, // enabled, learningEnabled=FALSE
+                adjScale, eta, 0.02, true, true, 5.0, false, 1.0e-4,
+                true, "GLOBAL_SQRT", 0.05, 1.0, 5000);
+        mrf.setPatch4x4Config(finalCfg);
+
+        return mrf.evaluateAccuracy(testData, true);
+    }
+
+    private MarkovFieldDigitClassifier buildMrf(RowColumnDigitClassifier model,
+            com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model) throws Exception {
+        FactorGraphBuilder builder = new FactorGraphBuilder(
+                model.getRowModel(), model.getColumnModel(), model.getPatchModel(),
+                model.getRowExtractor(), model.getColumnExtractor(), model.getPatchExtractor(),
+                patch4x4Model);
+
+        ObjectMapper mapper = new ObjectMapper();
+        FactorGraphBuilder.ConfigRoot configRoot = mapper.readValue(
+                getClass().getResourceAsStream("/mrf_config.json"),
+                FactorGraphBuilder.ConfigRoot.class);
+        Map<String, DigitFactorNode> nodes = builder.build(getClass().getResourceAsStream("/mrf_config.json"));
+        DigitFactorNode root = nodes.get(configRoot.rootNodeId);
+        if (root == null)
+            throw new RuntimeException("Root node not found");
+
+        return new MarkovFieldDigitClassifier(root);
     }
 }

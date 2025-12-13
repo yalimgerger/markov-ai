@@ -70,7 +70,7 @@ public class MarkovFieldDigitClassifier {
         return res;
     }
 
-    public void evaluateAccuracy(List<DigitImage> testData, boolean isTestSet) {
+    public double evaluateAccuracy(List<DigitImage> testData, boolean isTestSet) {
         logger.info("Evaluating MRF accuracy on {} images (isTestSet={})...", testData.size(), isTestSet);
 
         com.markovai.server.ai.hierarchy.Patch4x4Node p4Node = findPatch4x4Node();
@@ -136,6 +136,7 @@ public class MarkovFieldDigitClassifier {
             logger.info("MRF Evaluation complete. Accuracy: {} ({}/{})",
                     String.format("%.4f", accuracy), correct, total);
         }
+        return accuracy;
     }
 
     public void setPatch4x4Config(com.markovai.server.ai.Patch4x4FeedbackConfig config) {

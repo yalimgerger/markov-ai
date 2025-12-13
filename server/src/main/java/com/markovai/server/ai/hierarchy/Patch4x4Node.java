@@ -26,6 +26,8 @@ public class Patch4x4Node implements DigitFactorNode {
     // Adjustment table: [digit][symbol]
     // 0..65535 symbols. 10 digits.
     private final double[][] adj = new double[10][65536];
+    private final long[] globalSymbolCount = new long[65536];
+    private long updatesCounter = 0;
 
     public Patch4x4Node(String id, DigitPatch4x4UnigramModel model, double smoothingLambda,
             Patch4x4FeedbackConfig feedbackCfg) {
@@ -159,8 +161,28 @@ public class Patch4x4Node implements DigitFactorNode {
         }
 
         for (int s : symbols) {
-            adj[trueDigit][s] += feedbackCfg.eta * scale;
-            adj[rivalDigit][s] -= feedbackCfg.eta * scale;
+            if (feedbackCfg.learningEnabled) {
+                globalSymbolCount[s]++;
+            }
+
+            double scaleFreq = 1.0;
+            if (feedbackCfg.frequencyScalingEnabled) {
+                if ("GLOBAL_LINEAR".equals(feedbackCfg.frequencyScalingMode)) {
+                    scaleFreq = 1.0 / (1.0 + globalSymbolCount[s]);
+                } else {
+                    // Default to GLOBAL_SQRT
+                    scaleFreq = 1.0 / Math.sqrt(1.0 + globalSymbolCount[s]);
+                }
+                if (scaleFreq < feedbackCfg.minUpdateScale)
+                    scaleFreq = feedbackCfg.minUpdateScale;
+                if (scaleFreq > feedbackCfg.maxUpdateScale)
+                    scaleFreq = feedbackCfg.maxUpdateScale;
+            }
+
+            double etaEff = feedbackCfg.eta * scale * scaleFreq;
+
+            adj[trueDigit][s] += etaEff;
+            adj[rivalDigit][s] -= etaEff;
 
             double m = feedbackCfg.maxAdjAbs;
             if (adj[trueDigit][s] > m)
@@ -173,6 +195,11 @@ public class Patch4x4Node implements DigitFactorNode {
                 adj[rivalDigit][s] = -m;
         }
 
+        updatesCounter++;
+        if (feedbackCfg.applyDecayEveryNUpdates > 0 && updatesCounter % feedbackCfg.applyDecayEveryNUpdates == 0) {
+            applyDecay(feedbackCfg.decayRate);
+        }
+
         if (logger.isTraceEnabled()) {
             logger.trace("Feedback update: true={}, rival={}, margin={:.4f}, scale={:.4f}, updated {} symbols",
                     trueDigit, rivalDigit, margin, scale, symbols.length);
@@ -181,13 +208,33 @@ public class Patch4x4Node implements DigitFactorNode {
 
     public void applyDecayIfEnabled() {
         if (feedbackCfg.enabled && feedbackCfg.applyDecayEachEpoch) {
-            double factor = 1.0 - feedbackCfg.decayRate;
-            for (int d = 0; d < 10; d++) {
-                for (int s = 0; s < 65536; s++) {
-                    adj[d][s] *= factor;
-                }
-            }
-            logger.info("Applied decay to Patch4x4 adjustments (factor={})", factor);
+            applyDecay(feedbackCfg.decayRate);
+            logger.info("Applied decay to Patch4x4 adjustments (epoch end)");
         }
+    }
+
+    private void applyDecay(double rate) {
+        double factor = 1.0 - rate;
+        for (int d = 0; d < 10; d++) {
+            for (int s = 0; s < 65536; s++) {
+                adj[d][s] *= factor;
+            }
+        }
+        if (logger.isDebugEnabled()) {
+            logger.debug("Applied decay to Patch4x4 adjustments (factor={})", factor);
+        }
+    }
+
+    public void resetFeedbackState() {
+        for (int d = 0; d < 10; d++) {
+            for (int s = 0; s < 65536; s++) {
+                adj[d][s] = 0.0;
+            }
+        }
+        for (int s = 0; s < 65536; s++) {
+            globalSymbolCount[s] = 0;
+        }
+        updatesCounter = 0;
+        logger.info("Reset Patch4x4 feedback state (adj and counts).");
     }
 }
