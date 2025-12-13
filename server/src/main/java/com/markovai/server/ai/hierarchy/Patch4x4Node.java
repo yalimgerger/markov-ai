@@ -98,8 +98,8 @@ public class Patch4x4Node implements DigitFactorNode {
                 if (val > maxAvg)
                     maxAvg = val;
             }
-            logger.debug("Patch4x4Node {} [Label {}]: AvgLogL range=[{:.4f}, {:.4f}]",
-                    id, img.label, minAvg, maxAvg);
+            logger.debug("Patch4x4Node {} [Label {}]: AvgLogL range=[{}, {}]",
+                    id, img.label, String.format("%.4f", minAvg), String.format("%.4f", maxAvg));
         }
 
         return new NodeResult(avgLogL);
@@ -195,19 +195,29 @@ public class Patch4x4Node implements DigitFactorNode {
                 adj[rivalDigit][s] = -m;
         }
 
-        updatesCounter++;
-        if (feedbackCfg.applyDecayEveryNUpdates > 0 && updatesCounter % feedbackCfg.applyDecayEveryNUpdates == 0) {
-            applyDecay(feedbackCfg.decayRate);
+        updatesCounter += symbols.length;
+        if (feedbackCfg.applyDecayEveryNUpdates > 0
+                && updatesCounter % feedbackCfg.applyDecayEveryNUpdates < symbols.length) {
+            // Check if we crossed a multiple of N
+            // Simplification: if (updatesCounter % N) is small, or just check the modulo.
+            // Strict "every N" means we trigger if we just crossed the threshold.
+            // Since we add 49 at a time, we might skip the exact 0.
+            // Better check: (oldCounter / N) < (newCounter / N)
+            long oldVal = updatesCounter - symbols.length;
+            if (oldVal / feedbackCfg.applyDecayEveryNUpdates < updatesCounter / feedbackCfg.applyDecayEveryNUpdates) {
+                applyDecay(feedbackCfg.decayRate);
+            }
         }
 
         if (logger.isTraceEnabled()) {
-            logger.trace("Feedback update: true={}, rival={}, margin={:.4f}, scale={:.4f}, updated {} symbols",
-                    trueDigit, rivalDigit, margin, scale, symbols.length);
+            logger.trace("Feedback update: true={}, rival={}, margin={}, scale={}, updated {} symbols",
+                    trueDigit, rivalDigit, String.format("%.4f", margin), String.format("%.4f", scale), symbols.length);
         }
     }
 
-    public void applyDecayIfEnabled() {
-        if (feedbackCfg.enabled && feedbackCfg.applyDecayEachEpoch) {
+    public void applyDecayIfEnabled(boolean isLearningAllowed) {
+        if (feedbackCfg.enabled && feedbackCfg.learningEnabled && isLearningAllowed
+                && feedbackCfg.applyDecayEachEpoch) {
             applyDecay(feedbackCfg.decayRate);
             logger.info("Applied decay to Patch4x4 adjustments (epoch end)");
         }

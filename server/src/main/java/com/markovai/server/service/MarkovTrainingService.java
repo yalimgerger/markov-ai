@@ -256,29 +256,31 @@ public class MarkovTrainingService {
 
             MarkovFieldDigitClassifier mrf = new MarkovFieldDigitClassifier(root);
 
+            // Get base config from file
+            com.markovai.server.ai.Patch4x4FeedbackConfig baseConfig = getBaseConfigFromFile();
+
             // 2. Phase A: Baseline (Feedback Disabled)
             logger.info("PHASE A: Baseline Test Accuracy (Feedback Disabled)");
-            com.markovai.server.ai.Patch4x4FeedbackConfig baselineCfg = com.markovai.server.ai.Patch4x4FeedbackConfig
-                    .disabled();
+            com.markovai.server.ai.Patch4x4FeedbackConfig baselineCfg = baseConfig.copy();
+            baselineCfg.enabled = false;
             mrf.setPatch4x4Config(baselineCfg);
             mrf.evaluateAccuracy(testData, true);
 
             // 3. Phase B: Adaptation (Feedback Enabled, Learning Enabled) on TRAIN subset
-            // Split train data: Use first 2000 images for adaptation
-            int adaptSize = Math.min(2000, trainData.size());
-            List<DigitImage> adaptSet = trainData.subList(0, adaptSize);
-            logger.info("PHASE B: Adaptation on TRAIN subset ({} images). Feedback Learning ENABLED.", adaptSize);
+            // Deterministic sampling
+            int adaptSize = 2000;
+            List<DigitImage> adaptSet = selectAdaptationSubset(trainData, adaptSize, 12345L);
+            logger.info("PHASE B: Adaptation on TRAIN subset ({} images). Feedback Learning ENABLED.", adaptSet.size());
 
             // Enable feedback and learning
-            // We clone the default config or create one, but enabling everything.
-            // Let's assume the JSON had defaults we want, but force
-            // enabled/learningEnabled.
-            com.markovai.server.ai.Patch4x4FeedbackConfig adaptationCfg = new com.markovai.server.ai.Patch4x4FeedbackConfig(
-                    true, true, // enabled, learningEnabled
-                    0.10, 0.003, 0.02, true, true, 5.0, false, 1.0e-4, // heuristics or defaults
-                    false, "GLOBAL_SQRT", 0.05, 1.0, 0 // freq defaults
-            );
+            com.markovai.server.ai.Patch4x4FeedbackConfig adaptationCfg = baseConfig.copy();
+            adaptationCfg.enabled = true;
+            adaptationCfg.learningEnabled = true;
             mrf.setPatch4x4Config(adaptationCfg);
+
+            // Reset MRF state before adaptation (just in case, though it's fresh here)
+            // But we actually want to ensure the node state is clean. The MRF was just
+            // built, so it is clean.
 
             // Run evaluation on ADAPT set (isTestSet=false)
             mrf.evaluateAccuracy(adaptSet, false);
@@ -287,14 +289,12 @@ public class MarkovTrainingService {
             // 4. Phase C: Final Test (Feedback Enabled, Learning FROZEN)
             logger.info("PHASE C: Final Test Accuracy (Feedback Scoring Enabled, Learning Frozen)");
 
-            com.markovai.server.ai.Patch4x4FeedbackConfig finalCfg = new com.markovai.server.ai.Patch4x4FeedbackConfig(
-                    true, false, // enabled, learningEnabled=FALSE
-                    0.10, 0.003, 0.02, true, true, 5.0, false, 1.0e-4,
-                    false, "GLOBAL_SQRT", 0.05, 1.0, 0);
+            com.markovai.server.ai.Patch4x4FeedbackConfig finalCfg = baseConfig.copy();
+            finalCfg.enabled = true;
+            finalCfg.learningEnabled = false;
             mrf.setPatch4x4Config(finalCfg);
 
-            // Run on Test Data (isTestSet=true) - This should pass the guard because
-            // learning is disabled
+            // Run on Test Data (isTestSet=true)
             mrf.evaluateAccuracy(testData, true);
 
             logger.info("============================================================");
@@ -323,7 +323,7 @@ public class MarkovTrainingService {
             // 1. Compute Baseline (Once)
             logger.info("Computing Baseline Accuracy...");
             double baselineAcc = evaluateSweepBaseline(model, testData, patch4x4Model);
-            logger.info("Baseline Accuracy: {:.4f}", baselineAcc);
+            logger.info("Baseline Accuracy: {}", String.format("%.4f", baselineAcc));
 
             // Explicit Grid
             double[] adjScales = { 0.10, 0.05, 0.02, 0.01 };
@@ -417,24 +417,27 @@ public class MarkovTrainingService {
         // Build Fresh MRF
         MarkovFieldDigitClassifier mrf = buildMrf(model, patch4x4Model);
 
-        // Adaptation Train Subset (2000)
-        int adaptSize = Math.min(2000, trainData.size());
-        List<DigitImage> adaptSet = trainData.subList(0, adaptSize);
+        // Get Base Config (so we respect file settings for other params)
+        com.markovai.server.ai.Patch4x4FeedbackConfig baseConfig = getBaseConfigFromFile();
+
+        // Adaptation Train Subset (2000) - Deterministic
+        List<DigitImage> adaptSet = selectAdaptationSubset(trainData, 2000, 12345L);
 
         // Enable Feedback (Adaptation Mode)
-        com.markovai.server.ai.Patch4x4FeedbackConfig adaptationCfg = new com.markovai.server.ai.Patch4x4FeedbackConfig(
-                true, true, // enabled, learningEnabled
-                adjScale, eta, 0.02, true, true, 5.0, false, 1.0e-4,
-                true, "GLOBAL_SQRT", 0.05, 1.0, 5000 // Freq scaling enabled
-        );
+        com.markovai.server.ai.Patch4x4FeedbackConfig adaptationCfg = baseConfig.copy();
+        adaptationCfg.enabled = true;
+        adaptationCfg.learningEnabled = true;
+        adaptationCfg.adjScale = adjScale; // Override from sweep
+        adaptationCfg.eta = eta; // Override from sweep
+
         mrf.setPatch4x4Config(adaptationCfg);
         mrf.evaluateAccuracy(adaptSet, false);
 
         // Freeze and Test
-        com.markovai.server.ai.Patch4x4FeedbackConfig finalCfg = new com.markovai.server.ai.Patch4x4FeedbackConfig(
-                true, false, // enabled, learningEnabled=FALSE
-                adjScale, eta, 0.02, true, true, 5.0, false, 1.0e-4,
-                true, "GLOBAL_SQRT", 0.05, 1.0, 5000);
+        com.markovai.server.ai.Patch4x4FeedbackConfig finalCfg = adaptationCfg.copy();
+        finalCfg.learningEnabled = false;
+        // Keep adjScale / eta same for inference (scoring)
+
         mrf.setPatch4x4Config(finalCfg);
 
         return mrf.evaluateAccuracy(testData, true);
@@ -447,15 +450,42 @@ public class MarkovTrainingService {
                 model.getRowExtractor(), model.getColumnExtractor(), model.getPatchExtractor(),
                 patch4x4Model);
 
-        ObjectMapper mapper = new ObjectMapper();
-        FactorGraphBuilder.ConfigRoot configRoot = mapper.readValue(
-                getClass().getResourceAsStream("/mrf_config.json"),
-                FactorGraphBuilder.ConfigRoot.class);
+        FactorGraphBuilder.ConfigRoot configRoot = loadMrfConfig();
         Map<String, DigitFactorNode> nodes = builder.build(getClass().getResourceAsStream("/mrf_config.json"));
         DigitFactorNode root = nodes.get(configRoot.rootNodeId);
         if (root == null)
             throw new RuntimeException("Root node not found");
 
         return new MarkovFieldDigitClassifier(root);
+    }
+
+    private FactorGraphBuilder.ConfigRoot loadMrfConfig() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        return mapper.readValue(
+                getClass().getResourceAsStream("/mrf_config.json"),
+                FactorGraphBuilder.ConfigRoot.class);
+    }
+
+    /**
+     * Finds the base configuration from the loaded file.
+     */
+    private com.markovai.server.ai.Patch4x4FeedbackConfig getBaseConfigFromFile() throws Exception {
+        FactorGraphBuilder.ConfigRoot root = loadMrfConfig();
+        for (FactorGraphBuilder.ConfigNode node : root.nodes) {
+            if ("Patch4x4Node".equals(node.type) && node.feedback != null) {
+                return node.feedback;
+            }
+        }
+        // Fallback default if not found in JSON
+        logger.warn("Patch4x4Node feedback config not found in JSON, using defaults.");
+        return new com.markovai.server.ai.Patch4x4FeedbackConfig(
+                false, false, 0.10, 0.003, 0.02, true, true, 5.0, false, 1.0e-4,
+                false, "GLOBAL_SQRT", 0.05, 1.0, 0);
+    }
+
+    private List<DigitImage> selectAdaptationSubset(List<DigitImage> trainData, int adaptSize, long seed) {
+        List<DigitImage> copy = new ArrayList<>(trainData);
+        java.util.Collections.shuffle(copy, new java.util.Random(seed));
+        return copy.subList(0, Math.min(adaptSize, copy.size()));
     }
 }

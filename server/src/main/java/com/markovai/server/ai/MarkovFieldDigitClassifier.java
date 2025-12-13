@@ -82,8 +82,10 @@ public class MarkovFieldDigitClassifier {
         }
 
         // Try to apply decay at start of epoch/eval if applicable
+        // Only allow decay if this is NOT a test set (i.e. isLearningAllowed =
+        // !isTestSet)
         if (p4Node != null) {
-            p4Node.applyDecayIfEnabled();
+            p4Node.applyDecayIfEnabled(!isTestSet);
         }
 
         int correct = 0;

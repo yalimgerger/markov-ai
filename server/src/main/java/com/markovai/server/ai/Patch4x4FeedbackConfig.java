@@ -58,4 +58,23 @@ public class Patch4x4FeedbackConfig {
         return new Patch4x4FeedbackConfig(false, false, 0.10, 0.003, 0.02, true, true, 5.0, false, 1.0e-4, false,
                 "GLOBAL_SQRT", 0.05, 1.0, 0);
     }
+
+    public Patch4x4FeedbackConfig copy() {
+        return new Patch4x4FeedbackConfig(
+                this.enabled,
+                this.learningEnabled,
+                this.adjScale,
+                this.eta,
+                this.marginTarget,
+                this.updateOnlyIfIncorrect,
+                this.useMarginGating,
+                this.maxAdjAbs,
+                this.applyDecayEachEpoch,
+                this.decayRate,
+                this.frequencyScalingEnabled,
+                this.frequencyScalingMode,
+                this.minUpdateScale,
+                this.maxUpdateScale,
+                this.applyDecayEveryNUpdates);
+    }
 }
