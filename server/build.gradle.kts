@@ -36,9 +36,7 @@ val npmBuild by tasks.registering(Exec::class) {
     // However, Gradle needs to know this task produces resources.
 }
 
-tasks.processResources {
-    dependsOn(npmBuild)
-}
+     dependsOn(npmBuild)
 
 tasks.register<JavaExec>("precompute") {
     group = "application"

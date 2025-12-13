@@ -2,11 +2,43 @@
     "nodes": [
         {
             "id": "row",
-            "type": "RowMarkovNode"
+            "type": "RowMarkovNode",
+            "feedback": {
+                "enabled": false,
+                "learningEnabled": false,
+                "adjScale": 0.10,
+                "eta": 0.003,
+                "marginTarget": 0.02,
+                "updateOnlyIfIncorrect": true,
+                "useMarginGating": true,
+                "maxAdjAbs": 5.0,
+                "frequencyScalingEnabled": true,
+                "frequencyScalingMode": "GLOBAL_SQRT",
+                "minUpdateScale": 0.05,
+                "maxUpdateScale": 1.0,
+                "applyDecayEveryNUpdates": 5000,
+                "decayRate": 1.0e-4
+            }
         },
         {
             "id": "col",
-            "type": "ColumnMarkovNode"
+            "type": "ColumnMarkovNode",
+            "feedback": {
+                "enabled": false,
+                "learningEnabled": false,
+                "adjScale": 0.10,
+                "eta": 0.003,
+                "marginTarget": 0.02,
+                "updateOnlyIfIncorrect": true,
+                "useMarginGating": true,
+                "maxAdjAbs": 5.0,
+                "frequencyScalingEnabled": true,
+                "frequencyScalingMode": "GLOBAL_SQRT",
+                "minUpdateScale": 0.05,
+                "maxUpdateScale": 1.0,
+                "applyDecayEveryNUpdates": 5000,
+                "decayRate": 1.0e-4
+            }
         },
         {
             "id": "patch",

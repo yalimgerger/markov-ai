@@ -86,14 +86,18 @@ public class FactorGraphBuilder {
                         RowMarkovEvaluator rowEval = new RowMarkovEvaluator(rowModel, rowExtractor, CHAIN_VERSION);
                         CachedMarkovChainEvaluator cachedRow = new CachedMarkovChainEvaluator(rowEval, imageDao,
                                 resultDao);
-                        node = new RowMarkovNode(cn.id, cachedRow);
+                        Patch4x4FeedbackConfig rowFeedback = cn.feedback != null ? cn.feedback
+                                : Patch4x4FeedbackConfig.disabled();
+                        node = new RowMarkovNode(cn.id, cachedRow, rowExtractor, rowFeedback);
                         break;
                     case "ColumnMarkovNode":
                         ColumnMarkovEvaluator colEval = new ColumnMarkovEvaluator(colModel, colExtractor,
                                 CHAIN_VERSION);
                         CachedMarkovChainEvaluator cachedCol = new CachedMarkovChainEvaluator(colEval, imageDao,
                                 resultDao);
-                        node = new ColumnMarkovNode(cn.id, cachedCol);
+                        Patch4x4FeedbackConfig colFeedback = cn.feedback != null ? cn.feedback
+                                : Patch4x4FeedbackConfig.disabled();
+                        node = new ColumnMarkovNode(cn.id, cachedCol, colExtractor, colFeedback);
                         break;
                     case "PatchMarkovNode":
                         Patch2x2Evaluator patchEval = new Patch2x2Evaluator(patchModel, patchExtractor, CHAIN_VERSION);

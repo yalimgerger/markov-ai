@@ -75,10 +75,20 @@ public class MarkovFieldDigitClassifier {
 
         com.markovai.server.ai.hierarchy.Patch4x4Node p4Node = findPatch4x4Node();
 
+        com.markovai.server.ai.hierarchy.RowMarkovNode rowNode = findRowMarkovNode();
+        com.markovai.server.ai.hierarchy.ColumnMarkovNode colNode = findColumnMarkovNode();
+
         // LEAKAGE GUARD
-        if (isTestSet && p4Node != null && p4Node.getFeedbackConfig().learningEnabled) {
-            throw new IllegalStateException(
-                    "LEAKAGE PREVENTION: Feedback learning is active but dataset is marked as TEST. Stopping evaluation to prevent contamination.");
+        if (isTestSet) {
+            if (p4Node != null && p4Node.getFeedbackConfig().learningEnabled) {
+                throw new IllegalStateException("LEAKAGE PREVENTION: Patch4x4 learning active on TEST set.");
+            }
+            if (rowNode != null && rowNode.getFeedbackConfig().learningEnabled) {
+                throw new IllegalStateException("LEAKAGE PREVENTION: RowMarkov learning active on TEST set.");
+            }
+            if (colNode != null && colNode.getFeedbackConfig().learningEnabled) {
+                throw new IllegalStateException("LEAKAGE PREVENTION: ColumnMarkov learning active on TEST set.");
+            }
         }
 
         // Try to apply decay at start of epoch/eval if applicable
@@ -87,10 +97,18 @@ public class MarkovFieldDigitClassifier {
         if (p4Node != null) {
             p4Node.applyDecayIfEnabled(!isTestSet);
         }
+        if (rowNode != null) {
+            rowNode.applyDecayIfEnabled(!isTestSet);
+        }
+        if (colNode != null) {
+            colNode.applyDecayIfEnabled(!isTestSet);
+        }
 
         int correct = 0;
         int total = 0;
-        int feedbackUpdates = 0;
+        int p4Updates = 0;
+        int rowUpdates = 0;
+        int colUpdates = 0;
 
         for (DigitImage img : testData) {
             ClassificationResult result = classifyWithDetails(img);
@@ -118,10 +136,29 @@ public class MarkovFieldDigitClassifier {
                 double margin = scores[trueDigit] - rivalScore;
                 boolean wasCorrect = (predicted == trueDigit);
 
+                // Patch4x4 Feedback
                 int[] symbols = p4Node.extractPatchSymbols(img);
                 p4Node.applyFeedback(symbols, trueDigit, rivalDigit, wasCorrect, margin);
                 if (p4Node.getFeedbackConfig().learningEnabled) {
-                    feedbackUpdates++;
+                    p4Updates++;
+                }
+
+                // Row Feedback
+                if (rowNode != null) {
+                    int[] tids = rowNode.extractTransitionIds(img);
+                    rowNode.applyFeedback(tids, trueDigit, rivalDigit, wasCorrect, margin);
+                    if (rowNode.getFeedbackConfig().learningEnabled) {
+                        rowUpdates++;
+                    }
+                }
+
+                // Column Feedback
+                if (colNode != null) {
+                    int[] tids = colNode.extractTransitionIds(img);
+                    colNode.applyFeedback(tids, trueDigit, rivalDigit, wasCorrect, margin);
+                    if (colNode.getFeedbackConfig().learningEnabled) {
+                        colUpdates++;
+                    }
                 }
             }
 
@@ -132,8 +169,8 @@ public class MarkovFieldDigitClassifier {
 
         double accuracy = (double) correct / total;
         if (p4Node != null && p4Node.getFeedbackConfig().enabled) {
-            logger.info("MRF Evaluation complete. Accuracy: {} ({}/{}) [Feedback Updates: {}]",
-                    String.format("%.4f", accuracy), correct, total, feedbackUpdates);
+            logger.info("MRF Evaluation complete. Accuracy: {} ({}/{}) [P4Updates: {}, RowUpdates: {}, ColUpdates: {}]",
+                    String.format("%.4f", accuracy), correct, total, p4Updates, rowUpdates, colUpdates);
         } else {
             logger.info("MRF Evaluation complete. Accuracy: {} ({}/{})",
                     String.format("%.4f", accuracy), correct, total);
@@ -152,16 +189,49 @@ public class MarkovFieldDigitClassifier {
         }
     }
 
-    private com.markovai.server.ai.hierarchy.Patch4x4Node findPatch4x4Node() {
-        return findNodeRecursive(root, "patch4x4");
+    public void setRowFeedbackConfig(com.markovai.server.ai.Patch4x4FeedbackConfig config) {
+        com.markovai.server.ai.hierarchy.RowMarkovNode node = findRowMarkovNode();
+        if (node != null) {
+            node.setFeedbackConfig(config);
+            logger.info("Updated RowMarkov feedback config: enabled={}, learningEnabled={}",
+                    config.enabled, config.learningEnabled);
+        } else {
+            logger.warn("Cannot set RowMarkov config: Node not found in graph.");
+        }
     }
 
-    private com.markovai.server.ai.hierarchy.Patch4x4Node findNodeRecursive(DigitFactorNode current, String targetId) {
-        if (current instanceof com.markovai.server.ai.hierarchy.Patch4x4Node && current.getId().equals(targetId)) {
-            return (com.markovai.server.ai.hierarchy.Patch4x4Node) current;
+    public void setColumnFeedbackConfig(com.markovai.server.ai.Patch4x4FeedbackConfig config) {
+        com.markovai.server.ai.hierarchy.ColumnMarkovNode node = findColumnMarkovNode();
+        if (node != null) {
+            node.setFeedbackConfig(config);
+            logger.info("Updated ColumnMarkov feedback config: enabled={}, learningEnabled={}",
+                    config.enabled, config.learningEnabled);
+        } else {
+            logger.warn("Cannot set ColumnMarkov config: Node not found in graph.");
+        }
+    }
+
+    private com.markovai.server.ai.hierarchy.Patch4x4Node findPatch4x4Node() {
+        return (com.markovai.server.ai.hierarchy.Patch4x4Node) findNodeRecursive(root, "patch4x4",
+                com.markovai.server.ai.hierarchy.Patch4x4Node.class);
+    }
+
+    private com.markovai.server.ai.hierarchy.RowMarkovNode findRowMarkovNode() {
+        return (com.markovai.server.ai.hierarchy.RowMarkovNode) findNodeRecursive(root, "row",
+                com.markovai.server.ai.hierarchy.RowMarkovNode.class);
+    }
+
+    private com.markovai.server.ai.hierarchy.ColumnMarkovNode findColumnMarkovNode() {
+        return (com.markovai.server.ai.hierarchy.ColumnMarkovNode) findNodeRecursive(root, "col",
+                com.markovai.server.ai.hierarchy.ColumnMarkovNode.class);
+    }
+
+    private <T> T findNodeRecursive(DigitFactorNode current, String targetId, Class<T> type) {
+        if (current.getId().equals(targetId) && type.isInstance(current)) {
+            return type.cast(current);
         }
         for (DigitFactorNode child : current.getChildren()) {
-            com.markovai.server.ai.hierarchy.Patch4x4Node found = findNodeRecursive(child, targetId);
+            T found = findNodeRecursive(child, targetId, type);
             if (found != null)
                 return found;
         }

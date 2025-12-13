@@ -96,9 +96,23 @@ public class MarkovTrainingService {
                     if (runSweep) {
                         runFeedbackSweep(model, trainingData, testingData, patch4x4Model);
                     } else if (runMultiSeed) {
-                        runLeakageFreeMultiSeedVerification(model, testingData, trainingData, patch4x4Model);
+                        boolean useRowFeedback = "true".equalsIgnoreCase(System.getProperty("rowFeedback"))
+                                || (appArgs != null && appArgs.containsOption("rowFeedback") && "true"
+                                        .equalsIgnoreCase(appArgs.getOptionValues("rowFeedback").get(0)));
+                        boolean useColFeedback = "true".equalsIgnoreCase(System.getProperty("colFeedback"))
+                                || (appArgs != null && appArgs.containsOption("colFeedback") && "true"
+                                        .equalsIgnoreCase(appArgs.getOptionValues("colFeedback").get(0)));
+                        runLeakageFreeMultiSeedVerification(model, testingData, trainingData, patch4x4Model,
+                                useRowFeedback, useColFeedback);
                     } else if (runVerification) {
-                        runLeakageFreeVerification(model, testingData, trainingData, patch4x4Model);
+                        boolean useRowFeedback = "true".equalsIgnoreCase(System.getProperty("rowFeedback"))
+                                || (appArgs != null && appArgs.containsOption("rowFeedback") && "true"
+                                        .equalsIgnoreCase(appArgs.getOptionValues("rowFeedback").get(0)));
+                        boolean useColFeedback = "true".equalsIgnoreCase(System.getProperty("colFeedback"))
+                                || (appArgs != null && appArgs.containsOption("colFeedback") && "true"
+                                        .equalsIgnoreCase(appArgs.getOptionValues("colFeedback").get(0)));
+                        runLeakageFreeVerification(model, testingData, trainingData, patch4x4Model, useRowFeedback,
+                                useColFeedback);
                     } else {
                         // Legacy Evaluation
                         model.evaluateAccuracy(testingData);
@@ -272,7 +286,8 @@ public class MarkovTrainingService {
     }
 
     private void runLeakageFreeMultiSeedVerification(RowColumnDigitClassifier model, List<DigitImage> testData,
-            List<DigitImage> trainData, com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model) {
+            List<DigitImage> trainData, com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model,
+            boolean useRowFeedback, boolean useColFeedback) {
         logger.info("============================================================");
         logger.info("STARTING MULTI-SEED LEAKAGE-FREE VERIFICATION");
         logger.info("============================================================");
@@ -296,9 +311,10 @@ public class MarkovTrainingService {
             // We will run the full protocol for each seed.
 
             for (long seed : seeds) {
-                logger.info("Running protocol for seed={}", seed);
+                logger.info("Running protocol for seed={}, rowFeedback={}, colFeedback={}", seed, useRowFeedback,
+                        useColFeedback);
                 LeakageFreeResult result = performLeakageFreeProtocol(model, testData, trainData, patch4x4Model, seed,
-                        false);
+                        false, useRowFeedback, useColFeedback);
                 results.add(result);
                 logger.info("Seed={}  Baseline={:.4f}  Frozen={:.4f}  Delta={:+.4f}",
                         seed, result.baselineAcc, result.frozenAcc, result.getDelta());
@@ -359,13 +375,15 @@ public class MarkovTrainingService {
     }
 
     private void runLeakageFreeVerification(RowColumnDigitClassifier model, List<DigitImage> testData,
-            List<DigitImage> trainData, com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model) {
+            List<DigitImage> trainData, com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model,
+            boolean useRowFeedback, boolean useColFeedback) {
         logger.info("============================================================");
         logger.info("STARTING LEAKAGE-FREE VERIFICATION PROTOCOL (Single Seed)");
         logger.info("============================================================");
 
         try {
-            performLeakageFreeProtocol(model, testData, trainData, patch4x4Model, 12345L, true);
+            performLeakageFreeProtocol(model, testData, trainData, patch4x4Model, 12345L, true, useRowFeedback,
+                    useColFeedback);
 
             logger.info("============================================================");
             logger.info("VERIFICATION PROTOCOL COMPLETE");
@@ -384,7 +402,7 @@ public class MarkovTrainingService {
 
     private LeakageFreeResult performLeakageFreeProtocol(RowColumnDigitClassifier model, List<DigitImage> testData,
             List<DigitImage> trainData, com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model,
-            long seed, boolean verbose) throws Exception {
+            long seed, boolean verbose, boolean useRowFeedback, boolean useColFeedback) throws Exception {
 
         // 1. Build MRF
         FactorGraphBuilder builder = new FactorGraphBuilder(
@@ -427,6 +445,17 @@ public class MarkovTrainingService {
         // 2. Phase A: Baseline (Feedback Disabled)
         if (verbose)
             logger.info("PHASE A: Baseline Test Accuracy (Feedback Disabled)");
+
+        // Reset row config to baseline (disabled)
+        com.markovai.server.ai.Patch4x4FeedbackConfig rowBaseline = com.markovai.server.ai.Patch4x4FeedbackConfig
+                .disabled();
+        mrf.setRowFeedbackConfig(rowBaseline);
+
+        // Reset col config to baseline
+        com.markovai.server.ai.Patch4x4FeedbackConfig colBaseline = com.markovai.server.ai.Patch4x4FeedbackConfig
+                .disabled();
+        mrf.setColumnFeedbackConfig(colBaseline);
+
         com.markovai.server.ai.Patch4x4FeedbackConfig baselineCfg = baseConfig.copy();
         baselineCfg.enabled = false;
         mrf.setPatch4x4Config(baselineCfg);
@@ -441,6 +470,56 @@ public class MarkovTrainingService {
         com.markovai.server.ai.Patch4x4FeedbackConfig adaptationCfg = baseConfig.copy();
         adaptationCfg.enabled = true;
         adaptationCfg.learningEnabled = true;
+        // Set Row Feedback for Adaptation
+        com.markovai.server.ai.Patch4x4FeedbackConfig rowAdapt = new com.markovai.server.ai.Patch4x4FeedbackConfig();
+        // We'll reuse default values but set enabled/learning based on flag
+        // Ideally we should load from file too if present, but here we just toggle.
+        // Assuming mrf_config has defaults we want.
+        // Let's create a config based on the passed flag.
+        if (useRowFeedback) {
+            // For now, hardcode reasonable defaults resembling Patch4x4, or use defaults
+            // from Patch4x4Config if config file missing
+            // Actually, we should probably read the row config from file if possible.
+            // But simpler to just use Patch4x4 defaults for now or clean defaults.
+            // We will use standard defaults.
+            rowAdapt = com.markovai.server.ai.Patch4x4FeedbackConfig.disabled();
+            rowAdapt.enabled = true;
+            rowAdapt.learningEnabled = true;
+            // Set other params to defaults
+            rowAdapt.adjScale = 0.10;
+            rowAdapt.eta = 0.003;
+            rowAdapt.marginTarget = 0.02;
+            rowAdapt.updateOnlyIfIncorrect = true;
+            rowAdapt.useMarginGating = true;
+            rowAdapt.maxAdjAbs = 5.0;
+            rowAdapt.frequencyScalingEnabled = true;
+            rowAdapt.frequencyScalingMode = "GLOBAL_SQRT";
+            // Optional: read these from config properly in future task
+        } else {
+            rowAdapt = com.markovai.server.ai.Patch4x4FeedbackConfig.disabled();
+        }
+        mrf.setRowFeedbackConfig(rowAdapt);
+
+        // Set Col Feedback
+        com.markovai.server.ai.Patch4x4FeedbackConfig colAdapt;
+        if (useColFeedback) {
+            colAdapt = com.markovai.server.ai.Patch4x4FeedbackConfig.disabled();
+            colAdapt.enabled = true;
+            colAdapt.learningEnabled = true;
+            // Defaults
+            colAdapt.adjScale = 0.10;
+            colAdapt.eta = 0.003;
+            colAdapt.marginTarget = 0.02;
+            colAdapt.updateOnlyIfIncorrect = true;
+            colAdapt.useMarginGating = true;
+            colAdapt.maxAdjAbs = 5.0;
+            colAdapt.frequencyScalingEnabled = true;
+            colAdapt.frequencyScalingMode = "GLOBAL_SQRT";
+        } else {
+            colAdapt = com.markovai.server.ai.Patch4x4FeedbackConfig.disabled();
+        }
+        mrf.setColumnFeedbackConfig(colAdapt);
+
         mrf.setPatch4x4Config(adaptationCfg);
 
         // Run evaluation on ADAPT set (isTestSet=false)
@@ -456,6 +535,24 @@ public class MarkovTrainingService {
         finalCfg.enabled = true;
         finalCfg.learningEnabled = false;
         mrf.setPatch4x4Config(finalCfg);
+
+        // Freeze Row Feedback
+        if (useRowFeedback) {
+            com.markovai.server.ai.Patch4x4FeedbackConfig rowFrozen = rowAdapt.copy();
+            rowFrozen.learningEnabled = false;
+            mrf.setRowFeedbackConfig(rowFrozen);
+        } else {
+            mrf.setRowFeedbackConfig(com.markovai.server.ai.Patch4x4FeedbackConfig.disabled());
+        }
+
+        // Freeze Col Feedback
+        if (useColFeedback) {
+            com.markovai.server.ai.Patch4x4FeedbackConfig colFrozen = colAdapt.copy();
+            colFrozen.learningEnabled = false;
+            mrf.setColumnFeedbackConfig(colFrozen);
+        } else {
+            mrf.setColumnFeedbackConfig(com.markovai.server.ai.Patch4x4FeedbackConfig.disabled());
+        }
 
         // Run on Test Data (isTestSet=true)
         double frozenAcc = mrf.evaluateAccuracy(phaseCTest, true);
