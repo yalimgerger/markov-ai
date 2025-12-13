@@ -56,3 +56,5 @@ tasks.named<org.springframework.boot.gradle.tasks.run.BootRun>("bootRun") {
     // Increase heap size to handle dataset
     maxHeapSize = "2g"
 }
+
+

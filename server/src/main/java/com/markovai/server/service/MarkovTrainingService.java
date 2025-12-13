@@ -325,17 +325,49 @@ public class MarkovTrainingService {
             double baselineAcc = evaluateSweepBaseline(model, testData, patch4x4Model);
             logger.info("Baseline Accuracy: {:.4f}", baselineAcc);
 
+            // Explicit Grid
             double[] adjScales = { 0.10, 0.05, 0.02, 0.01 };
             double[] etas = { 0.003, 0.001, 0.0005 };
 
-            System.out.println("\nRESULTS TABLE:");
-            System.out.println("adjScale\teta\tfreqScaling\tdecayEveryN\tbaselineTest\tadaptedTest");
+            List<SweepResult> results = new ArrayList<>();
 
             for (double scale : adjScales) {
                 for (double eta : etas) {
+                    logger.info("Running sweep iteration: adjScale={}, eta={}", scale, eta);
+                    // MRF is rebuilt every iteration, effectively resetting node state.
+
                     double adaptedAcc = runSweepIteration(model, trainData, testData, patch4x4Model, scale, eta);
-                    System.out.printf("%.4f\t%.4f\ttrue\t\t5000\t\t%.4f\t\t%.4f%n",
-                            scale, eta, baselineAcc, adaptedAcc);
+
+                    results.add(new SweepResult(scale, eta, baselineAcc, adaptedAcc));
+                }
+            }
+
+            // Print Full Table
+            System.out.println("\n=== FULL LEAKAGE-FREE FEEDBACK SWEEP RESULTS ===");
+            System.out.println("freqScalingEnabled=true");
+            System.out.println("freqScalingMode=GLOBAL_SQRT");
+            System.out.println("decayEveryNUpdates=5000");
+            System.out.println("adaptationSetSize=2000");
+            System.out.println();
+            System.out.println("adjScale\teta\tbaselineAcc\tadaptedAcc\tdelta");
+            System.out.println("-------------------------------------------------------");
+
+            for (SweepResult r : results) {
+                System.out.printf("%.4f\t%.4f\t%.4f\t%.4f\t%.4f%n",
+                        r.adjScale, r.eta, r.baselineAcc, r.adaptedAcc, r.getDelta());
+            }
+
+            // CSV Output
+            boolean printCsv = "true".equalsIgnoreCase(System.getProperty("printSweepAsCSV")) ||
+                    (appArgs != null && appArgs.containsOption("printSweepAsCSV")
+                            && "true".equalsIgnoreCase(appArgs.getOptionValues("printSweepAsCSV").get(0)));
+
+            if (printCsv) {
+                System.out.println("\n=== CSV OUTPUT ===");
+                System.out.println("adjScale,eta,baselineAcc,adaptedAcc,delta");
+                for (SweepResult r : results) {
+                    System.out.printf("%.4f,%.4f,%.4f,%.4f,%.4f%n",
+                            r.adjScale, r.eta, r.baselineAcc, r.adaptedAcc, r.getDelta());
                 }
             }
 
@@ -350,6 +382,24 @@ public class MarkovTrainingService {
 
         } catch (Exception e) {
             logger.error("Sweep failed", e);
+        }
+    }
+
+    private static class SweepResult {
+        double adjScale;
+        double eta;
+        double baselineAcc;
+        double adaptedAcc;
+
+        public SweepResult(double adjScale, double eta, double baselineAcc, double adaptedAcc) {
+            this.adjScale = adjScale;
+            this.eta = eta;
+            this.baselineAcc = baselineAcc;
+            this.adaptedAcc = adaptedAcc;
+        }
+
+        public double getDelta() {
+            return adaptedAcc - baselineAcc;
         }
     }
 
