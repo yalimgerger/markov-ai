@@ -96,21 +96,95 @@ public class MarkovTrainingService {
                     if (runSweep) {
                         runFeedbackSweep(model, trainingData, testingData, patch4x4Model);
                     } else if (runMultiSeed) {
-                        boolean useRowFeedback = "true".equalsIgnoreCase(System.getProperty("rowFeedback"))
-                                || (appArgs != null && appArgs.containsOption("rowFeedback") && "true"
-                                        .equalsIgnoreCase(appArgs.getOptionValues("rowFeedback").get(0)));
-                        boolean useColFeedback = "true".equalsIgnoreCase(System.getProperty("colFeedback"))
-                                || (appArgs != null && appArgs.containsOption("colFeedback") && "true"
-                                        .equalsIgnoreCase(appArgs.getOptionValues("colFeedback").get(0)));
+                        boolean useRowFeedback = false;
+                        boolean useColFeedback = false;
+                        String mode = System.getProperty("feedbackMode");
+                        if (mode == null && appArgs != null && appArgs.containsOption("feedbackMode")) {
+                            List<String> values = appArgs.getOptionValues("feedbackMode");
+                            if (values != null && !values.isEmpty()) {
+                                mode = values.get(0);
+                            }
+                        }
+
+                        if (mode != null && !mode.isEmpty()) {
+                            switch (mode.toUpperCase()) {
+                                case "PATCH":
+                                    useRowFeedback = false;
+                                    useColFeedback = false;
+                                    break;
+                                case "PATCH_ROW":
+                                    useRowFeedback = true;
+                                    useColFeedback = false;
+                                    break;
+                                case "PATCH_COL":
+                                    useRowFeedback = false;
+                                    useColFeedback = true;
+                                    break;
+                                case "PATCH_ROW_COL":
+                                    useRowFeedback = true;
+                                    useColFeedback = true;
+                                    break;
+                                default:
+                                    logger.warn("Unknown feedbackMode '{}', defaulting to PATCH", mode);
+                                    useRowFeedback = false;
+                                    useColFeedback = false;
+                            }
+                            logger.info("Feedback configuration set via feedbackMode={}: row={}, col={}", mode,
+                                    useRowFeedback, useColFeedback);
+                        } else {
+                            // Fallback to legacy flags
+                            useRowFeedback = "true".equalsIgnoreCase(System.getProperty("rowFeedback"))
+                                    || (appArgs != null && appArgs.containsOption("rowFeedback") && "true"
+                                            .equalsIgnoreCase(appArgs.getOptionValues("rowFeedback").get(0)));
+                            useColFeedback = "true".equalsIgnoreCase(System.getProperty("colFeedback"))
+                                    || (appArgs != null && appArgs.containsOption("colFeedback") && "true"
+                                            .equalsIgnoreCase(appArgs.getOptionValues("colFeedback").get(0)));
+                        }
+
                         runLeakageFreeMultiSeedVerification(model, testingData, trainingData, patch4x4Model,
                                 useRowFeedback, useColFeedback);
                     } else if (runVerification) {
-                        boolean useRowFeedback = "true".equalsIgnoreCase(System.getProperty("rowFeedback"))
-                                || (appArgs != null && appArgs.containsOption("rowFeedback") && "true"
-                                        .equalsIgnoreCase(appArgs.getOptionValues("rowFeedback").get(0)));
-                        boolean useColFeedback = "true".equalsIgnoreCase(System.getProperty("colFeedback"))
-                                || (appArgs != null && appArgs.containsOption("colFeedback") && "true"
-                                        .equalsIgnoreCase(appArgs.getOptionValues("colFeedback").get(0)));
+                        boolean useRowFeedback = false;
+                        boolean useColFeedback = false;
+                        String mode = System.getProperty("feedbackMode");
+                        if (mode == null && appArgs != null && appArgs.containsOption("feedbackMode")) {
+                            List<String> values = appArgs.getOptionValues("feedbackMode");
+                            if (values != null && !values.isEmpty()) {
+                                mode = values.get(0);
+                            }
+                        }
+
+                        if (mode != null && !mode.isEmpty()) {
+                            switch (mode.toUpperCase()) {
+                                case "PATCH":
+                                    useRowFeedback = false;
+                                    useColFeedback = false;
+                                    break;
+                                case "PATCH_ROW":
+                                    useRowFeedback = true;
+                                    useColFeedback = false;
+                                    break;
+                                case "PATCH_COL":
+                                    useRowFeedback = false;
+                                    useColFeedback = true;
+                                    break;
+                                case "PATCH_ROW_COL":
+                                    useRowFeedback = true;
+                                    useColFeedback = true;
+                                    break;
+                                default:
+                                    useRowFeedback = false;
+                                    useColFeedback = false;
+                            }
+                        } else {
+                            useRowFeedback = "true".equalsIgnoreCase(System.getProperty("rowFeedback"))
+                                    || (appArgs != null && appArgs.containsOption("rowFeedback") && "true"
+                                            .equalsIgnoreCase(appArgs.getOptionValues("rowFeedback").get(0)));
+                            useColFeedback = "true".equalsIgnoreCase(System.getProperty("colFeedback"))
+                                    || (appArgs != null && appArgs.containsOption("colFeedback") && "true"
+                                            .equalsIgnoreCase(appArgs.getOptionValues("colFeedback").get(0)));
+                        }
+
                         runLeakageFreeVerification(model, testingData, trainingData, patch4x4Model, useRowFeedback,
                                 useColFeedback);
                     } else {
@@ -348,7 +422,16 @@ public class MarkovTrainingService {
             double stdFrozen = (results.size() > 1) ? Math.sqrt(varFrozen / (results.size() - 1)) : 0.0;
             double stdDelta = (results.size() > 1) ? Math.sqrt(varDelta / (results.size() - 1)) : 0.0;
 
+            String modeName = "PATCH";
+            if (useRowFeedback && useColFeedback)
+                modeName = "PATCH_ROW_COL";
+            else if (useRowFeedback)
+                modeName = "PATCH_ROW";
+            else if (useColFeedback)
+                modeName = "PATCH_COL";
+
             System.out.println("\n=== MULTI-SEED LEAKAGE-FREE SUMMARY ===");
+            System.out.printf("Mode: %s%n", modeName);
             System.out.printf("Seeds: %d  AdaptSize: 2000%n", results.size());
             System.out.printf("FrozenAcc mean=%.4f std=%.4f%n", meanFrozen, stdFrozen);
             System.out.printf("Delta     mean=%+.4f std=%.4f min=%+.4f max=%+.4f%n", meanDelta, stdDelta, minDelta,
