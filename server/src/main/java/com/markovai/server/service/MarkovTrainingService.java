@@ -517,7 +517,6 @@ public class MarkovTrainingService {
 
         // Define canonical datasets
         List<DigitImage> phaseATest = testData;
-        // adaptSize is passed as argument
         List<DigitImage> phaseBAdapt = selectAdaptationSubset(trainData, adaptSize, seed);
         List<DigitImage> phaseCTest = testData;
 
@@ -533,26 +532,27 @@ public class MarkovTrainingService {
             logger.info("  Phase C eval size: {}", phaseCTest.size());
         }
 
-        // Get base config from file
-        com.markovai.server.ai.Patch4x4FeedbackConfig baseConfig = getBaseConfigFromFile();
+        // Load configs from file or defaults
+        com.markovai.server.ai.Patch4x4FeedbackConfig basePatchConfig = getFeedbackConfigOrDefault("patch4x4");
+        com.markovai.server.ai.Patch4x4FeedbackConfig baseRowConfig = getFeedbackConfigOrDefault("row");
+        com.markovai.server.ai.Patch4x4FeedbackConfig baseColConfig = getFeedbackConfigOrDefault("col");
 
         // 2. Phase A: Baseline (Feedback Disabled)
         if (verbose)
             logger.info("PHASE A: Baseline Test Accuracy (Feedback Disabled)");
 
-        // Reset row config to baseline (disabled)
-        com.markovai.server.ai.Patch4x4FeedbackConfig rowBaseline = com.markovai.server.ai.Patch4x4FeedbackConfig
-                .disabled();
+        // Apply disabled configs for baseline
+        com.markovai.server.ai.Patch4x4FeedbackConfig rowBaseline = baseRowConfig.copy();
+        rowBaseline.enabled = false;
         mrf.setRowFeedbackConfig(rowBaseline);
 
-        // Reset col config to baseline
-        com.markovai.server.ai.Patch4x4FeedbackConfig colBaseline = com.markovai.server.ai.Patch4x4FeedbackConfig
-                .disabled();
+        com.markovai.server.ai.Patch4x4FeedbackConfig colBaseline = baseColConfig.copy();
+        colBaseline.enabled = false;
         mrf.setColumnFeedbackConfig(colBaseline);
 
-        com.markovai.server.ai.Patch4x4FeedbackConfig baselineCfg = baseConfig.copy();
-        baselineCfg.enabled = false;
-        mrf.setPatch4x4Config(baselineCfg);
+        com.markovai.server.ai.Patch4x4FeedbackConfig patchBaseline = basePatchConfig.copy();
+        patchBaseline.enabled = false;
+        mrf.setPatch4x4Config(patchBaseline);
 
         double baselineAcc;
         if (knownBaseline != null) {
@@ -569,61 +569,31 @@ public class MarkovTrainingService {
             logger.info("PHASE B: Adaptation on TRAIN subset ({} images). Feedback Learning ENABLED.",
                     phaseBAdapt.size());
 
-        // Enable feedback and learning
-        com.markovai.server.ai.Patch4x4FeedbackConfig adaptationCfg = baseConfig.copy();
-        adaptationCfg.enabled = true;
-        adaptationCfg.learningEnabled = true;
-        // Set Row Feedback for Adaptation
-        com.markovai.server.ai.Patch4x4FeedbackConfig rowAdapt = new com.markovai.server.ai.Patch4x4FeedbackConfig();
-        // We'll reuse default values but set enabled/learning based on flag
-        // Ideally we should load from file too if present, but here we just toggle.
-        // Assuming mrf_config has defaults we want.
-        // Let's create a config based on the passed flag.
+        // Setup Adaptation Configs
+        com.markovai.server.ai.Patch4x4FeedbackConfig rowAdapt = baseRowConfig.copy();
         if (useRowFeedback) {
-            // For now, hardcode reasonable defaults resembling Patch4x4, or use defaults
-            // from Patch4x4Config if config file missing
-            // Actually, we should probably read the row config from file if possible.
-            // But simpler to just use Patch4x4 defaults for now or clean defaults.
-            // We will use standard defaults.
-            rowAdapt = com.markovai.server.ai.Patch4x4FeedbackConfig.disabled();
             rowAdapt.enabled = true;
             rowAdapt.learningEnabled = true;
-            // Set other params to defaults
-            rowAdapt.adjScale = 0.10;
-            rowAdapt.eta = 0.003;
-            rowAdapt.marginTarget = 0.02;
-            rowAdapt.updateOnlyIfIncorrect = true;
-            rowAdapt.useMarginGating = true;
-            rowAdapt.maxAdjAbs = 5.0;
-            rowAdapt.frequencyScalingEnabled = true;
-            rowAdapt.frequencyScalingMode = "GLOBAL_SQRT";
-            // Optional: read these from config properly in future task
         } else {
-            rowAdapt = com.markovai.server.ai.Patch4x4FeedbackConfig.disabled();
+            rowAdapt.enabled = false;
+            rowAdapt.learningEnabled = false;
         }
         mrf.setRowFeedbackConfig(rowAdapt);
 
-        // Set Col Feedback
-        com.markovai.server.ai.Patch4x4FeedbackConfig colAdapt;
+        com.markovai.server.ai.Patch4x4FeedbackConfig colAdapt = baseColConfig.copy();
         if (useColFeedback) {
-            colAdapt = com.markovai.server.ai.Patch4x4FeedbackConfig.disabled();
             colAdapt.enabled = true;
             colAdapt.learningEnabled = true;
-            // Defaults
-            colAdapt.adjScale = 0.10;
-            colAdapt.eta = 0.003;
-            colAdapt.marginTarget = 0.02;
-            colAdapt.updateOnlyIfIncorrect = true;
-            colAdapt.useMarginGating = true;
-            colAdapt.maxAdjAbs = 5.0;
-            colAdapt.frequencyScalingEnabled = true;
-            colAdapt.frequencyScalingMode = "GLOBAL_SQRT";
         } else {
-            colAdapt = com.markovai.server.ai.Patch4x4FeedbackConfig.disabled();
+            colAdapt.enabled = false;
+            colAdapt.learningEnabled = false;
         }
         mrf.setColumnFeedbackConfig(colAdapt);
 
-        mrf.setPatch4x4Config(adaptationCfg);
+        com.markovai.server.ai.Patch4x4FeedbackConfig patchAdapt = basePatchConfig.copy();
+        patchAdapt.enabled = true;
+        patchAdapt.learningEnabled = true;
+        mrf.setPatch4x4Config(patchAdapt);
 
         // Run evaluation on ADAPT set (isTestSet=false)
         mrf.evaluateAccuracy(phaseBAdapt, false);
@@ -634,28 +604,20 @@ public class MarkovTrainingService {
         if (verbose)
             logger.info("PHASE C: Final Test Accuracy (Feedback Scoring Enabled, Learning Frozen)");
 
-        com.markovai.server.ai.Patch4x4FeedbackConfig finalCfg = baseConfig.copy();
-        finalCfg.enabled = true;
-        finalCfg.learningEnabled = false;
-        mrf.setPatch4x4Config(finalCfg);
-
         // Freeze Row Feedback
-        if (useRowFeedback) {
-            com.markovai.server.ai.Patch4x4FeedbackConfig rowFrozen = rowAdapt.copy();
-            rowFrozen.learningEnabled = false;
-            mrf.setRowFeedbackConfig(rowFrozen);
-        } else {
-            mrf.setRowFeedbackConfig(com.markovai.server.ai.Patch4x4FeedbackConfig.disabled());
-        }
+        com.markovai.server.ai.Patch4x4FeedbackConfig rowFrozen = rowAdapt.copy();
+        rowFrozen.learningEnabled = false;
+        mrf.setRowFeedbackConfig(rowFrozen);
 
         // Freeze Col Feedback
-        if (useColFeedback) {
-            com.markovai.server.ai.Patch4x4FeedbackConfig colFrozen = colAdapt.copy();
-            colFrozen.learningEnabled = false;
-            mrf.setColumnFeedbackConfig(colFrozen);
-        } else {
-            mrf.setColumnFeedbackConfig(com.markovai.server.ai.Patch4x4FeedbackConfig.disabled());
-        }
+        com.markovai.server.ai.Patch4x4FeedbackConfig colFrozen = colAdapt.copy();
+        colFrozen.learningEnabled = false;
+        mrf.setColumnFeedbackConfig(colFrozen);
+
+        // Freeze Patch Feedback
+        com.markovai.server.ai.Patch4x4FeedbackConfig patchFrozen = patchAdapt.copy();
+        patchFrozen.learningEnabled = false;
+        mrf.setPatch4x4Config(patchFrozen);
 
         // Run on Test Data (isTestSet=true)
         double frozenAcc = mrf.evaluateAccuracy(phaseCTest, true);
@@ -987,19 +949,54 @@ public class MarkovTrainingService {
 
     /**
      * Finds the base configuration from the loaded file.
+     * Deprecated in favor of getFeedbackConfigOrDefault("patch4x4").
      */
     private com.markovai.server.ai.Patch4x4FeedbackConfig getBaseConfigFromFile() throws Exception {
-        FactorGraphBuilder.ConfigRoot root = loadMrfConfig();
-        for (FactorGraphBuilder.ConfigNode node : root.nodes) {
-            if ("Patch4x4Node".equals(node.type) && node.feedback != null) {
-                return node.feedback;
+        return getFeedbackConfigOrDefault("patch4x4");
+    }
+
+    /**
+     * Loads feedback config for a node by ID.
+     * If config is missing in JSON, falls back to hardcoded defaults:
+     * - "patch4x4": existing default
+     * - "row" / "col": existing row/col default (with enabled=false, which is
+     * overridden by protocol)
+     */
+    com.markovai.server.ai.Patch4x4FeedbackConfig getFeedbackConfigOrDefault(String nodeId) {
+        try {
+            FactorGraphBuilder.ConfigRoot root = loadMrfConfig();
+            for (FactorGraphBuilder.ConfigNode node : root.nodes) {
+                if (nodeId.equals(node.id) && node.feedback != null) {
+                    return node.feedback;
+                }
             }
+        } catch (Exception e) {
+            logger.warn("Failed to load feedback config for node {}, using defaults. Error: {}", nodeId,
+                    e.getMessage());
         }
-        // Fallback default if not found in JSON
-        logger.warn("Patch4x4Node feedback config not found in JSON, using defaults.");
-        return new com.markovai.server.ai.Patch4x4FeedbackConfig(
-                false, false, 0.10, 0.003, 0.02, true, true, 5.0, false, 1.0e-4,
-                false, "GLOBAL_SQRT", 0.05, 1.0, 0);
+
+        // Fallback Defaults
+        if ("patch4x4".equals(nodeId)) {
+            return new com.markovai.server.ai.Patch4x4FeedbackConfig(
+                    false, false, 0.10, 0.003, 0.02, true, true, 5.0, false, 1.0e-4,
+                    false, "GLOBAL_SQRT", 0.05, 1.0, 0);
+        } else {
+            // Default for Row/Col matches previous hardcoded values
+            com.markovai.server.ai.Patch4x4FeedbackConfig c = com.markovai.server.ai.Patch4x4FeedbackConfig
+                    .disabled();
+            c.adjScale = 0.10;
+            c.eta = 0.003;
+            c.marginTarget = 0.02;
+            c.updateOnlyIfIncorrect = true;
+            c.useMarginGating = true;
+            c.maxAdjAbs = 5.0;
+            c.frequencyScalingEnabled = true;
+            c.frequencyScalingMode = "GLOBAL_SQRT";
+            // Note: applyDecayEveryNUpdates defaults to 0 in disabled(), whereas config
+            // might set it to 5000.
+            // This maintains backward compatibility if config is missing.
+            return c;
+        }
     }
 
     private List<DigitImage> selectAdaptationSubset(List<DigitImage> trainData, int adaptSize, long seed) {
