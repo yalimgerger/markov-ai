@@ -36,7 +36,9 @@ val npmBuild by tasks.registering(Exec::class) {
     // However, Gradle needs to know this task produces resources.
 }
 
-     dependsOn(npmBuild)
+tasks.processResources {
+    dependsOn(npmBuild)
+}
 
 tasks.register<JavaExec>("precompute") {
     group = "application"
@@ -46,10 +48,24 @@ tasks.register<JavaExec>("precompute") {
 }
 
 tasks.named<org.springframework.boot.gradle.tasks.run.BootRun>("bootRun") {
-    // Pass the verification flag if present
-    val propName = "verifyFeedbackNoLeakage"
-    if (System.getProperty(propName) != null) {
-        systemProperty(propName, System.getProperty(propName))
+    // Pass verification flags and config if present
+    listOf(
+        "verifyFeedbackNoLeakage",
+        "verifyFeedbackNoLeakageMultiSeed",
+        "verifyFeedbackNoLeakageAdaptSweep",
+        "verifyFeedbackSweep",
+        "adaptSizes",
+        "adaptSeeds",
+        "feedbackMode",
+        "feedbackModes",
+        "printPerSeed",
+        "server.port",
+        "rowFeedback",
+        "colFeedback"
+    ).forEach { prop ->
+        if (System.getProperty(prop) != null) {
+            systemProperty(prop, System.getProperty(prop))
+        }
     }
     // Increase heap size to handle dataset
     maxHeapSize = "2g"

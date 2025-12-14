@@ -93,7 +93,15 @@ public class MarkovTrainingService {
                                     .equalsIgnoreCase(
                                             appArgs.getOptionValues("verifyFeedbackNoLeakageMultiSeed").get(0)));
 
-                    if (runSweep) {
+                    boolean runAdaptSweep = "true"
+                            .equalsIgnoreCase(System.getProperty("verifyFeedbackNoLeakageAdaptSweep"))
+                            || (appArgs != null && appArgs.containsOption("verifyFeedbackNoLeakageAdaptSweep")
+                                    && "true".equalsIgnoreCase(
+                                            appArgs.getOptionValues("verifyFeedbackNoLeakageAdaptSweep").get(0)));
+
+                    if (runAdaptSweep) {
+                        runAdaptationSizeSweep(model, trainingData, testingData, patch4x4Model);
+                    } else if (runSweep) {
                         runFeedbackSweep(model, trainingData, testingData, patch4x4Model);
                     } else if (runMultiSeed) {
                         boolean useRowFeedback = false;
@@ -388,7 +396,7 @@ public class MarkovTrainingService {
                 logger.info("Running protocol for seed={}, rowFeedback={}, colFeedback={}", seed, useRowFeedback,
                         useColFeedback);
                 LeakageFreeResult result = performLeakageFreeProtocol(model, testData, trainData, patch4x4Model, seed,
-                        false, useRowFeedback, useColFeedback);
+                        false, useRowFeedback, useColFeedback, 2000, null);
                 results.add(result);
                 logger.info("Seed={}  Baseline={:.4f}  Frozen={:.4f}  Delta={:+.4f}",
                         seed, result.baselineAcc, result.frozenAcc, result.getDelta());
@@ -466,7 +474,7 @@ public class MarkovTrainingService {
 
         try {
             performLeakageFreeProtocol(model, testData, trainData, patch4x4Model, 12345L, true, useRowFeedback,
-                    useColFeedback);
+                    useColFeedback, 2000, null);
 
             logger.info("============================================================");
             logger.info("VERIFICATION PROTOCOL COMPLETE");
@@ -485,7 +493,9 @@ public class MarkovTrainingService {
 
     private LeakageFreeResult performLeakageFreeProtocol(RowColumnDigitClassifier model, List<DigitImage> testData,
             List<DigitImage> trainData, com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model,
-            long seed, boolean verbose, boolean useRowFeedback, boolean useColFeedback) throws Exception {
+            long seed, boolean verbose, boolean useRowFeedback, boolean useColFeedback, int adaptSize,
+            Double knownBaseline)
+            throws Exception {
 
         // 1. Build MRF
         FactorGraphBuilder builder = new FactorGraphBuilder(
@@ -506,7 +516,7 @@ public class MarkovTrainingService {
 
         // Define canonical datasets
         List<DigitImage> phaseATest = testData;
-        int adaptSize = 2000;
+        // adaptSize is passed as argument
         List<DigitImage> phaseBAdapt = selectAdaptationSubset(trainData, adaptSize, seed);
         List<DigitImage> phaseCTest = testData;
 
@@ -542,7 +552,16 @@ public class MarkovTrainingService {
         com.markovai.server.ai.Patch4x4FeedbackConfig baselineCfg = baseConfig.copy();
         baselineCfg.enabled = false;
         mrf.setPatch4x4Config(baselineCfg);
-        double baselineAcc = mrf.evaluateAccuracy(phaseATest, true);
+
+        double baselineAcc;
+        if (knownBaseline != null) {
+            baselineAcc = knownBaseline;
+            if (verbose)
+                logger.info("PHASE A: Baseline Test Accuracy (Using Precomputed): {}",
+                        String.format("%.4f", baselineAcc));
+        } else {
+            baselineAcc = mrf.evaluateAccuracy(phaseATest, true);
+        }
 
         // 3. Phase B: Adaptation (Feedback Enabled, Learning Enabled) on TRAIN subset
         if (verbose)
@@ -641,6 +660,175 @@ public class MarkovTrainingService {
         double frozenAcc = mrf.evaluateAccuracy(phaseCTest, true);
 
         return new LeakageFreeResult(seed, baselineAcc, frozenAcc);
+    }
+
+    private void runAdaptationSizeSweep(RowColumnDigitClassifier model, List<DigitImage> trainData,
+            List<DigitImage> testData,
+            com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model) {
+        logger.info("============================================================");
+        logger.info("STARTING ADAPTATION SIZE SWEEP (LEAKAGE-FREE)");
+        logger.info("============================================================");
+
+        try {
+            // Filter training data to ensure no overlap with test data
+            java.util.Set<String> testHashes = testData.stream()
+                    .map(img -> img.imageHash)
+                    .filter(java.util.Objects::nonNull)
+                    .collect(java.util.stream.Collectors.toSet());
+
+            List<DigitImage> cleanTrainData = trainData.stream()
+                    .filter(img -> img.imageHash == null || !testHashes.contains(img.imageHash))
+                    .collect(java.util.stream.Collectors.toList());
+
+            if (cleanTrainData.size() < trainData.size()) {
+                logger.warn("Removed {} overlapping images from training set to ensure leakage-free protocol.",
+                        trainData.size() - cleanTrainData.size());
+            }
+
+            String adaptSizesStr = System.getProperty("adaptSizes");
+            int[] adaptSizes;
+            if (adaptSizesStr != null && !adaptSizesStr.isEmpty()) {
+                String[] parts = adaptSizesStr.split(",");
+                adaptSizes = new int[parts.length];
+                for (int i = 0; i < parts.length; i++) {
+                    adaptSizes[i] = Integer.parseInt(parts[i].trim());
+                }
+            } else {
+                adaptSizes = new int[] { 2000, 5000, 10000, 20000 };
+            }
+
+            String seedsStr = System.getProperty("adaptSeeds");
+            long[] seeds;
+            if (seedsStr != null && !seedsStr.isEmpty()) {
+                String[] parts = seedsStr.split(",");
+                seeds = new long[parts.length];
+                for (int i = 0; i < parts.length; i++) {
+                    seeds[i] = Long.parseLong(parts[i].trim());
+                }
+            } else {
+                seeds = new long[] { 12345L, 22222L, 33333L, 44444L, 55555L };
+            }
+
+            List<String> modes = new ArrayList<>();
+            String modeParam = System.getProperty("feedbackMode");
+            String modesParam = System.getProperty("feedbackModes");
+
+            if ("ALL".equalsIgnoreCase(modeParam)) {
+                modes.add("PATCH");
+                modes.add("PATCH_ROW");
+                modes.add("PATCH_COL");
+                modes.add("PATCH_ROW_COL");
+            } else if (modesParam != null && !modesParam.isEmpty()) {
+                for (String m : modesParam.split(",")) {
+                    modes.add(m.trim().toUpperCase());
+                }
+            } else if (modeParam != null && !modeParam.isEmpty()) {
+                modes.add(modeParam.toUpperCase());
+            } else {
+                modes.add("PATCH");
+                modes.add("PATCH_ROW");
+                modes.add("PATCH_COL");
+                modes.add("PATCH_ROW_COL");
+            }
+
+            double baselineAcc = evaluateSweepBaseline(model, testData, patch4x4Model);
+
+            System.out.println("\n=== LEAKAGE-FREE ADAPTATION SIZE SWEEP ===");
+            System.out.printf("baselineAcc=%.4f%n", baselineAcc);
+            System.out.print("seeds=[");
+            for (int i = 0; i < seeds.length; i++)
+                System.out.print(seeds[i] + (i < seeds.length - 1 ? "," : ""));
+            System.out.println("]");
+            System.out.print("adaptSizes=[");
+            for (int i = 0; i < adaptSizes.length; i++)
+                System.out.print(adaptSizes[i] + (i < adaptSizes.length - 1 ? "," : ""));
+            System.out.println("]");
+
+            com.markovai.server.ai.Patch4x4FeedbackConfig cfg = getBaseConfigFromFile();
+            System.out.printf(
+                    "config: freqScaling=%s, freqScalingMode=%s, applyDecayEveryNUpdates=%d, eta=%.4f, adjScale=%.4f%n",
+                    cfg.frequencyScalingEnabled, cfg.frequencyScalingMode, cfg.applyDecayEveryNUpdates, cfg.eta,
+                    cfg.adjScale);
+
+            System.out.println("\nmode,adaptSize,meanFrozen,meanDelta,stdDelta,minDelta,maxDelta");
+
+            List<String> verifyRows = new ArrayList<>();
+
+            for (String mode : modes) {
+                boolean useRow = mode.contains("ROW");
+                boolean useCol = mode.contains("COL");
+
+                for (int adaptSize : adaptSizes) {
+                    if (adaptSize > cleanTrainData.size()) {
+                        logger.warn("Adaptation size {} exceeds train data size {}, clamping.", adaptSize,
+                                cleanTrainData.size());
+                    }
+
+                    List<Double> deltas = new ArrayList<>();
+                    List<Double> frozens = new ArrayList<>();
+
+                    List<LeakageFreeResult> seedResults = java.util.stream.LongStream.of(seeds).parallel()
+                            .mapToObj(seed -> {
+                                try {
+                                    return performLeakageFreeProtocol(model, testData, cleanTrainData, patch4x4Model,
+                                            seed, false, useRow, useCol, adaptSize, baselineAcc);
+                                } catch (Exception e) {
+                                    throw new RuntimeException(e);
+                                }
+                            }).collect(java.util.stream.Collectors.toList());
+
+                    for (LeakageFreeResult res : seedResults) {
+                        double d = res.frozenAcc - baselineAcc;
+                        deltas.add(d);
+                        frozens.add(res.frozenAcc);
+                    }
+
+                    double sumFrozen = 0;
+                    for (double f : frozens)
+                        sumFrozen += f;
+                    double meanFrozen = sumFrozen / frozens.size();
+
+                    double sumDelta = 0;
+                    double minDelta = Double.MAX_VALUE;
+                    double maxDelta = -Double.MAX_VALUE;
+                    for (double d : deltas) {
+                        sumDelta += d;
+                        if (d < minDelta)
+                            minDelta = d;
+                        if (d > maxDelta)
+                            maxDelta = d;
+                    }
+                    double meanDelta = sumDelta / deltas.size();
+
+                    double varDelta = 0;
+                    if (deltas.size() > 1) {
+                        for (double d : deltas)
+                            varDelta += Math.pow(d - meanDelta, 2);
+                        varDelta /= (deltas.size() - 1);
+                    }
+                    double stdDelta = Math.sqrt(varDelta);
+
+                    String rowStr = String.format("%s,%d,%.4f,%.4f,%.4f,%.4f,%.4f",
+                            mode, adaptSize, meanFrozen, meanDelta, stdDelta, minDelta, maxDelta);
+                    System.out.println(rowStr);
+                    verifyRows.add(rowStr);
+                }
+            }
+
+            System.out.println("\n```csv");
+            System.out.println("mode,adaptSize,meanFrozen,meanDelta,stdDelta,minDelta,maxDelta");
+            for (String r : verifyRows)
+                System.out.println(r);
+            System.out.println("```");
+
+            if (context != null) {
+                context.close();
+                System.exit(0);
+            }
+
+        } catch (Exception e) {
+            logger.error("Adaptation sweep failed", e);
+        }
     }
 
     private void runFeedbackSweep(RowColumnDigitClassifier model, List<DigitImage> trainData, List<DigitImage> testData,
