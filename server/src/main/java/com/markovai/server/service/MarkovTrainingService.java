@@ -49,8 +49,9 @@ public class MarkovTrainingService {
         new Thread(() -> {
             try {
                 logger.info("Initializing Markov Training Service...");
-                List<DigitImage> trainingData = loadImages("classpath:mnist/training/*/*.png");
-                List<DigitImage> testingData = loadImages("classpath:mnist/testing/*/*.png");
+                String dataDir = System.getProperty("markov.data.dir", ".");
+                List<DigitImage> trainingData = loadImages("file:" + dataDir + "/mnist/training/*/*.png");
+                List<DigitImage> testingData = loadImages("file:" + dataDir + "/mnist/testing/*/*.png");
 
                 logger.info("Dataset loaded: trainExamples={}, testExamples={}", trainingData.size(),
                         testingData.size());

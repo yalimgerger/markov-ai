@@ -61,7 +61,8 @@ tasks.named<org.springframework.boot.gradle.tasks.run.BootRun>("bootRun") {
         "printPerSeed",
         "server.port",
         "rowFeedback",
-        "colFeedback"
+        "colFeedback",
+        "markov.data.dir"
     ).forEach { prop ->
         if (System.getProperty(prop) != null) {
             systemProperty(prop, System.getProperty(prop))

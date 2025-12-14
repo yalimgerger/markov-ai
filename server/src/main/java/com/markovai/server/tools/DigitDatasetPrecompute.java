@@ -45,7 +45,8 @@ public class DigitDatasetPrecompute {
         logger.info("Starting Offline Precompute on {}", datasetRoot);
 
         // Force cleanup of old cache
-        File dbFile = new File("markov_cache.db");
+        String dataDir = System.getProperty("markov.data.dir", ".");
+        File dbFile = new File(dataDir, "markov_cache.db");
         if (dbFile.exists()) {
             logger.info("Deleting existing DB file to force recomputation: {}", dbFile.getAbsolutePath());
             if (!dbFile.delete()) {
