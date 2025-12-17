@@ -62,7 +62,9 @@ tasks.named<org.springframework.boot.gradle.tasks.run.BootRun>("bootRun") {
         "server.port",
         "rowFeedback",
         "colFeedback",
-        "markov.data.dir"
+        "markov.data.dir",
+        "networkAttractorSanity",
+        "networkConvergenceSweep"
     ).forEach { prop ->
         if (System.getProperty(prop) != null) {
             systemProperty(prop, System.getProperty(prop))

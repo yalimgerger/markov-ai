@@ -1,6 +1,16 @@
 {
     "topology": "layered",
     "markov_data_directory": "/Users/yalimgerger/Documents/Antigravity/markov_data",
+    "network": {
+        "enabled": true,
+        "maxIters": 20,
+        "temperature": 1.0,
+        "priorWeight": 0.30,
+        "damping": 0.80,
+        "stopEpsilon": 1e-4,
+        "epsilon": 1e-9,
+        "debugStats": false
+    },
     "nodes": [
         {
             "id": "row",

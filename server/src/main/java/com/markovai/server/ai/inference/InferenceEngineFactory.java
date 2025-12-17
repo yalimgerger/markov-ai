@@ -11,10 +11,7 @@ public class InferenceEngineFactory {
 
     public static InferenceEngine create(FactorGraphBuilder.ConfigRoot config, MarkovFieldDigitClassifier classifier) {
         String topology = (config != null && config.topology != null) ? config.topology : "layered";
-        return create(topology, classifier);
-    }
 
-    public static InferenceEngine create(String topology, MarkovFieldDigitClassifier classifier) {
         // Default to layered if missing or invalid
         if (topology == null || topology.trim().isEmpty()) {
             logger.warn("Topology not specified, defaulting to 'layered'");
@@ -27,10 +24,19 @@ public class InferenceEngineFactory {
             case "layered":
                 return layered;
             case "network":
-                return new NetworkInferenceEngine(layered);
+                // If config is null, pass null - logic handles default fallback
+                return new NetworkInferenceEngine(classifier, config != null ? config.network : null);
             default:
                 logger.warn("Unknown topology '{}', defaulting to 'layered'", topology);
                 return layered;
         }
+    }
+
+    // Deprecated or testing overload
+    public static InferenceEngine create(String topology, MarkovFieldDigitClassifier classifier) {
+        // Just create a dummy config wrapper
+        FactorGraphBuilder.ConfigRoot cfg = new FactorGraphBuilder.ConfigRoot();
+        cfg.topology = topology;
+        return create(cfg, classifier);
     }
 }

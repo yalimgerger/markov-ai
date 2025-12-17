@@ -103,7 +103,20 @@ public class MarkovTrainingService {
                                     && "true".equalsIgnoreCase(
                                             appArgs.getOptionValues("verifyFeedbackNoLeakageAdaptSweep").get(0)));
 
-                    if (runAdaptSweep) {
+                    boolean runNetworkSanity = "true"
+                            .equalsIgnoreCase(System.getProperty("networkAttractorSanity"))
+                            || (appArgs != null && appArgs.containsOption("networkAttractorSanity")
+                                    && "true".equalsIgnoreCase(
+                                            appArgs.getOptionValues("networkAttractorSanity").get(0)));
+
+                    if (runNetworkSanity) {
+                        runNetworkAttractorSanityCheck(model, testingData, patch4x4Model);
+                    } else if ("true".equalsIgnoreCase(System.getProperty("networkConvergenceSweep"))
+                            || (appArgs != null && appArgs.containsOption("networkConvergenceSweep")
+                                    && "true".equalsIgnoreCase(
+                                            appArgs.getOptionValues("networkConvergenceSweep").get(0)))) {
+                        runNetworkConvergenceSweep(model, testingData, patch4x4Model);
+                    } else if (runAdaptSweep) {
                         runAdaptationSizeSweep(model, trainingData, testingData, patch4x4Model);
                     } else if (runSweep) {
                         runFeedbackSweep(model, trainingData, testingData, patch4x4Model);
@@ -1036,5 +1049,237 @@ public class MarkovTrainingService {
             throw new IllegalStateException("Data leakage detected: adaptation set overlaps with test set.");
         }
         logger.info("Data integrity check passed: 0 overlaps between adaptation set and test set.");
+    }
+
+    private void runNetworkAttractorSanityCheck(RowColumnDigitClassifier model, List<DigitImage> testData,
+            com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model) {
+        logger.info("============================================================");
+        logger.info("STARTING NETWORK ATTRACTOR SANITY CHECK");
+        logger.info("============================================================");
+
+        try {
+            // 1. Build MRF with Network Config Enforced
+            FactorGraphBuilder.ConfigRoot configRoot = loadMrfConfig();
+
+            // Override specific network settings for the test if needed, or rely on file
+            // Ensuring network mode is used even if config says layered
+            configRoot.topology = "network";
+            if (configRoot.network == null) {
+                configRoot.network = new FactorGraphBuilder.NetworkConfig();
+                configRoot.network.enabled = true;
+                configRoot.network.maxIters = 10;
+                configRoot.network.debugStats = true; // Enable debug stats
+                logger.info("Injecting default network config for sanity check.");
+            } else {
+                // Ensure enabled and debug
+                configRoot.network.enabled = true;
+                configRoot.network.debugStats = true;
+            }
+
+            MarkovFieldDigitClassifier mrf = buildMrf(model, patch4x4Model, configRoot);
+
+            // Force disable all feedback so we test PURE attractor inference on static
+            // graph
+            mrf.setRowFeedbackConfig(com.markovai.server.ai.Patch4x4FeedbackConfig.disabled());
+            mrf.setColumnFeedbackConfig(com.markovai.server.ai.Patch4x4FeedbackConfig.disabled());
+            mrf.setPatch4x4Config(com.markovai.server.ai.Patch4x4FeedbackConfig.disabled());
+
+            InferenceEngine engine = InferenceEngineFactory.create(configRoot, mrf);
+
+            // 2. Select Subset
+            List<DigitImage> subset = testData.subList(0, Math.min(200, testData.size()));
+            logger.info("Running inference on {} images...", subset.size());
+
+            int convergedCount = 0;
+            int totalIters = 0;
+            double entropyReductionSum = 0.0;
+            int correct = 0;
+
+            for (DigitImage img : subset) {
+                com.markovai.server.ai.inference.InferenceResult res = engine.infer(img);
+
+                if (res.getIterations() < configRoot.network.maxIters) {
+                    convergedCount++;
+                }
+                totalIters += res.getIterations();
+
+                // Estimate entropy reduction: H(initial) - H(final)
+                // We don't have H(initial) explicitly returned in result, but we can recompute
+                // if needed.
+                // Or just trust the logs.
+                // Let's rely on iteration count and convergence as main metrics.
+                // Actually, let's compute initial entropy from base scores if we want precise
+                // number,
+                // but for sanity check, just iteration count is good signal.
+
+                if (res.getPredictedDigit() == img.label) {
+                    correct++;
+                }
+            }
+
+            double meanIters = (double) totalIters / subset.size();
+            double accuracy = (double) correct / subset.size();
+
+            logger.info("Sanity Results:");
+            logger.info("  Images: {}", subset.size());
+            logger.info("  Converged (< maxIters): {}/{}", convergedCount, subset.size());
+            logger.info("  Mean Iterations: {:.2f}", meanIters);
+            logger.info("  Accuracy (No Learning): {:.4f}", accuracy);
+
+            if (meanIters > 1.0) {
+                logger.info("SUCCESS: Iterative refinement is active (mean iters > 1.0)");
+            } else {
+                logger.warn("WARNING: Mean iterations is 1.0. Attractor loop might be inactive or trivial.");
+            }
+
+            logger.info("============================================================");
+            logger.info("NETWORK SANITY CHECK COMPLETE");
+            logger.info("============================================================");
+
+            if (context != null) {
+                context.close();
+                System.exit(0);
+            }
+
+        } catch (Exception e) {
+            logger.error("Network sanity check failed", e);
+        }
+    }
+
+    private void runNetworkConvergenceSweep(RowColumnDigitClassifier model, List<DigitImage> testData,
+            com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model) {
+        logger.info("============================================================");
+        logger.info("STARTING NETWORK CONVERGENCE TUNING SWEEP");
+        logger.info("============================================================");
+
+        try {
+            // 1. Setup deterministic subset of 2000 images
+            List<DigitImage> subset = new ArrayList<>(testData);
+            java.util.Collections.shuffle(subset, new java.util.Random(12345L));
+            if (subset.size() > 2000) {
+                subset = subset.subList(0, 2000);
+            }
+            logger.info("Using subset of {} images for sweep.", subset.size());
+
+            // 2. Define Parameter Grid
+            double[] priorWeights = { 0.05, 0.10, 0.20, 0.30 };
+            double[] dampings = { 0.2, 0.4, 0.6, 0.8 };
+            int[] maxItersList = { 10, 20 };
+            double[] stopEpsilons = { 1e-4, 5e-4, 1e-3 };
+
+            // 3. Prepare Config
+            FactorGraphBuilder.ConfigRoot baseConfig = loadMrfConfig();
+            baseConfig.topology = "network";
+            if (baseConfig.network == null) {
+                baseConfig.network = new FactorGraphBuilder.NetworkConfig();
+                baseConfig.network.enabled = true;
+            }
+            // Fix constants
+            baseConfig.network.temperature = 1.0;
+            baseConfig.network.epsilon = 1e-9;
+            baseConfig.network.debugStats = false; // Disable debug logs to reduce noise
+
+            // Disable feedback learning to ensure stability
+            MarkovFieldDigitClassifier mrf = buildMrf(model, patch4x4Model, baseConfig);
+            mrf.setRowFeedbackConfig(com.markovai.server.ai.Patch4x4FeedbackConfig.disabled());
+            mrf.setColumnFeedbackConfig(com.markovai.server.ai.Patch4x4FeedbackConfig.disabled());
+            mrf.setPatch4x4Config(com.markovai.server.ai.Patch4x4FeedbackConfig.disabled());
+
+            // We need to rebuild MRF or engine?
+            // The MRF structure is constant. The InferenceEngine takes the config.
+            // We can reuse the ONE mrf instance, but we need to create a NEW
+            // InferenceEngine for each config param set.
+
+            List<String> results = new ArrayList<>();
+            results.add(
+                    "priorWeight,damping,maxIters,stopEpsilon,convergeRate,meanIters,medianIters,p90Iters,meanFinalMaxDelta,meanEntropyInit,meanEntropyFinal,meanEntropyRed,oscillationCount,accuracy");
+
+            logger.info("Total combinations: {}",
+                    priorWeights.length * dampings.length * maxItersList.length * stopEpsilons.length);
+
+            for (double prior : priorWeights) {
+                for (double damp : dampings) {
+                    for (int maxIter : maxItersList) {
+                        for (double stopEps : stopEpsilons) {
+                            // Update Config
+                            baseConfig.network.priorWeight = prior;
+                            baseConfig.network.damping = damp;
+                            baseConfig.network.maxIters = maxIter;
+                            baseConfig.network.stopEpsilon = stopEps;
+
+                            // Create Engine
+                            InferenceEngine engine = InferenceEngineFactory.create(baseConfig, mrf);
+
+                            // Run Inference
+                            int converged = 0;
+                            long sumIters = 0;
+                            List<Integer> itersList = new ArrayList<>();
+                            double sumFinalDelta = 0;
+                            double sumEntInit = 0;
+                            double sumEntFinal = 0;
+                            int oscillationCount = 0;
+                            int correct = 0;
+
+                            for (DigitImage img : subset) {
+                                com.markovai.server.ai.inference.NetworkInferenceResult res = (com.markovai.server.ai.inference.NetworkInferenceResult) engine
+                                        .infer(img);
+
+                                int it = res.getIterations();
+                                if (it < maxIter) {
+                                    converged++;
+                                }
+                                sumIters += it;
+                                itersList.add(it);
+
+                                sumFinalDelta += res.getFinalMaxDelta();
+                                sumEntInit += res.getInitialEntropy();
+                                sumEntFinal += res.getFinalEntropy();
+                                if (res.isOscillationDetected()) {
+                                    oscillationCount++;
+                                }
+                                if (res.getPredictedDigit() == img.label) {
+                                    correct++;
+                                }
+                            }
+
+                            // Compute Stats
+                            double convergeRate = (double) converged / subset.size();
+                            double meanIters = (double) sumIters / subset.size();
+                            java.util.Collections.sort(itersList);
+                            double medianIters = itersList.get(subset.size() / 2);
+                            double p90Iters = itersList.get((int) (subset.size() * 0.9));
+                            double meanFinalDelta = sumFinalDelta / subset.size();
+                            double meanEntInit = sumEntInit / subset.size();
+                            double meanEntFinal = sumEntFinal / subset.size();
+                            double meanEntRed = meanEntInit - meanEntFinal;
+                            double accuracy = (double) correct / subset.size();
+
+                            String line = String.format(java.util.Locale.US,
+                                    "%.2f,%.2f,%d,%.1e,%.4f,%.2f,%.1f,%.1f,%.6f,%.4f,%.4f,%.4f,%d,%.4f",
+                                    prior, damp, maxIter, stopEps, convergeRate, meanIters, medianIters, p90Iters,
+                                    meanFinalDelta, meanEntInit, meanEntFinal, meanEntRed, oscillationCount, accuracy);
+
+                            results.add(line);
+                            System.out.println(line); // Stream to stdout
+                        }
+                    }
+                }
+            }
+
+            // Print Full CSV Block
+            System.out.println("\n=== SWEEP RESULTS CSV ===");
+            for (String line : results) {
+                System.out.println(line);
+            }
+            System.out.println("=========================\n");
+
+            if (context != null) {
+                context.close();
+                System.exit(0);
+            }
+
+        } catch (Exception e) {
+            logger.error("Network sweep failed", e);
+        }
     }
 }

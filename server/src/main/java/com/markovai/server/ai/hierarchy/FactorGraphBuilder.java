@@ -66,9 +66,21 @@ public class FactorGraphBuilder {
         public Patch4x4FeedbackConfig feedback;
     }
 
+    public static class NetworkConfig {
+        public Boolean enabled;
+        public Integer maxIters;
+        public Double temperature;
+        public Double priorWeight;
+        public Double damping;
+        public Double stopEpsilon;
+        public Double epsilon;
+        public Boolean debugStats;
+    }
+
     public static class ConfigRoot {
         public String topology = "layered";
         public String markov_data_directory;
+        public NetworkConfig network;
         public List<ConfigNode> nodes;
         public String rootNodeId;
     }
