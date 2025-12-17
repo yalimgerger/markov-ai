@@ -3,8 +3,11 @@ package com.markovai.server.service;
 import com.markovai.server.ai.DigitImage;
 import com.markovai.server.ai.RowColumnDigitClassifier;
 import com.markovai.server.ai.MarkovFieldDigitClassifier;
+import com.markovai.server.ai.inference.InferenceEngine;
+import com.markovai.server.ai.inference.InferenceEngineFactory;
 import com.markovai.server.ai.hierarchy.DigitFactorNode;
 import com.markovai.server.ai.hierarchy.FactorGraphBuilder;
+import com.markovai.server.util.DataPathResolver;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,7 +52,7 @@ public class MarkovTrainingService {
         new Thread(() -> {
             try {
                 logger.info("Initializing Markov Training Service...");
-                String dataDir = System.getProperty("markov.data.dir", ".");
+                String dataDir = DataPathResolver.resolveDataDirectory();
                 List<DigitImage> trainingData = loadImages("file:" + dataDir + "/mnist/training/*/*.png");
                 List<DigitImage> testingData = loadImages("file:" + dataDir + "/mnist/testing/*/*.png");
 
@@ -206,12 +209,15 @@ public class MarkovTrainingService {
                                 FactorGraphBuilder builder = new FactorGraphBuilder(
                                         model.getRowModel(), model.getColumnModel(), model.getPatchModel(),
                                         model.getRowExtractor(), model.getColumnExtractor(), model.getPatchExtractor(),
-                                        patch4x4Model);
+                                        patch4x4Model, DataPathResolver.resolveDbPath());
 
                                 ObjectMapper mapper = new ObjectMapper();
                                 FactorGraphBuilder.ConfigRoot config = mapper.readValue(
                                         getClass().getResourceAsStream("/mrf_config.json"),
                                         FactorGraphBuilder.ConfigRoot.class);
+
+                                logger.info("Topology={} (default layered if missing)",
+                                        (config.topology != null ? config.topology : "layered"));
 
                                 Map<String, DigitFactorNode> nodes = builder
                                         .build(getClass().getResourceAsStream("/mrf_config.json"));
@@ -219,8 +225,9 @@ public class MarkovTrainingService {
 
                                 if (root != null) {
                                     MarkovFieldDigitClassifier mrf = new MarkovFieldDigitClassifier(root);
+                                    InferenceEngine engine = InferenceEngineFactory.create(config, mrf);
                                     // Default evaluation on test set (treat as test)
-                                    mrf.evaluateAccuracy(testingData, true);
+                                    mrf.evaluateAccuracy(testingData, true, engine);
                                 } else {
                                     logger.error("MRF Root node not found: {}", config.rootNodeId);
                                 }
@@ -502,7 +509,7 @@ public class MarkovTrainingService {
         FactorGraphBuilder builder = new FactorGraphBuilder(
                 model.getRowModel(), model.getColumnModel(), model.getPatchModel(),
                 model.getRowExtractor(), model.getColumnExtractor(), model.getPatchExtractor(),
-                patch4x4Model);
+                patch4x4Model, DataPathResolver.resolveDbPath());
 
         ObjectMapper mapper = new ObjectMapper();
         FactorGraphBuilder.ConfigRoot configRoot = mapper.readValue(
@@ -514,6 +521,7 @@ public class MarkovTrainingService {
             throw new RuntimeException("Root node not found");
 
         MarkovFieldDigitClassifier mrf = new MarkovFieldDigitClassifier(root);
+        InferenceEngine engine = InferenceEngineFactory.create(configRoot, mrf);
 
         // Define canonical datasets
         List<DigitImage> phaseATest = testData;
@@ -561,7 +569,7 @@ public class MarkovTrainingService {
                 logger.info("PHASE A: Baseline Test Accuracy (Using Precomputed): {}",
                         String.format("%.4f", baselineAcc));
         } else {
-            baselineAcc = mrf.evaluateAccuracy(phaseATest, true);
+            baselineAcc = mrf.evaluateAccuracy(phaseATest, true, engine);
         }
 
         // 3. Phase B: Adaptation (Feedback Enabled, Learning Enabled) on TRAIN subset
@@ -596,7 +604,7 @@ public class MarkovTrainingService {
         mrf.setPatch4x4Config(patchAdapt);
 
         // Run evaluation on ADAPT set (isTestSet=false)
-        mrf.evaluateAccuracy(phaseBAdapt, false);
+        mrf.evaluateAccuracy(phaseBAdapt, false, engine);
         if (verbose)
             logger.info("Adaptation complete.");
 
@@ -620,7 +628,7 @@ public class MarkovTrainingService {
         mrf.setPatch4x4Config(patchFrozen);
 
         // Run on Test Data (isTestSet=true)
-        double frozenAcc = mrf.evaluateAccuracy(phaseCTest, true);
+        double frozenAcc = mrf.evaluateAccuracy(phaseCTest, true, engine);
 
         return new LeakageFreeResult(seed, baselineAcc, frozenAcc);
     }
@@ -886,9 +894,11 @@ public class MarkovTrainingService {
 
     private double evaluateSweepBaseline(RowColumnDigitClassifier model, List<DigitImage> testData,
             com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model) throws Exception {
-        MarkovFieldDigitClassifier mrf = buildMrf(model, patch4x4Model);
+        FactorGraphBuilder.ConfigRoot config = loadMrfConfig();
+        MarkovFieldDigitClassifier mrf = buildMrf(model, patch4x4Model, config);
+        InferenceEngine engine = InferenceEngineFactory.create(config, mrf);
         mrf.setPatch4x4Config(com.markovai.server.ai.Patch4x4FeedbackConfig.disabled());
-        return mrf.evaluateAccuracy(testData, true);
+        return mrf.evaluateAccuracy(testData, true, engine);
     }
 
     private double runSweepIteration(RowColumnDigitClassifier model, List<DigitImage> trainData,
@@ -896,7 +906,9 @@ public class MarkovTrainingService {
             double eta) throws Exception {
 
         // Build Fresh MRF
-        MarkovFieldDigitClassifier mrf = buildMrf(model, patch4x4Model);
+        FactorGraphBuilder.ConfigRoot configRoot = loadMrfConfig();
+        MarkovFieldDigitClassifier mrf = buildMrf(model, patch4x4Model, configRoot);
+        InferenceEngine engine = InferenceEngineFactory.create(configRoot, mrf);
 
         // Get Base Config (so we respect file settings for other params)
         com.markovai.server.ai.Patch4x4FeedbackConfig baseConfig = getBaseConfigFromFile();
@@ -912,7 +924,7 @@ public class MarkovTrainingService {
         adaptationCfg.eta = eta; // Override from sweep
 
         mrf.setPatch4x4Config(adaptationCfg);
-        mrf.evaluateAccuracy(adaptSet, false);
+        mrf.evaluateAccuracy(adaptSet, false, engine);
 
         // Freeze and Test
         com.markovai.server.ai.Patch4x4FeedbackConfig finalCfg = adaptationCfg.copy();
@@ -921,17 +933,17 @@ public class MarkovTrainingService {
 
         mrf.setPatch4x4Config(finalCfg);
 
-        return mrf.evaluateAccuracy(testData, true);
+        return mrf.evaluateAccuracy(testData, true, engine);
     }
 
     private MarkovFieldDigitClassifier buildMrf(RowColumnDigitClassifier model,
-            com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model) throws Exception {
+            com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model, FactorGraphBuilder.ConfigRoot configRoot)
+            throws Exception {
         FactorGraphBuilder builder = new FactorGraphBuilder(
                 model.getRowModel(), model.getColumnModel(), model.getPatchModel(),
                 model.getRowExtractor(), model.getColumnExtractor(), model.getPatchExtractor(),
-                patch4x4Model);
+                patch4x4Model, DataPathResolver.resolveDbPath());
 
-        FactorGraphBuilder.ConfigRoot configRoot = loadMrfConfig();
         Map<String, DigitFactorNode> nodes = builder.build(getClass().getResourceAsStream("/mrf_config.json"));
         DigitFactorNode root = nodes.get(configRoot.rootNodeId);
         if (root == null)

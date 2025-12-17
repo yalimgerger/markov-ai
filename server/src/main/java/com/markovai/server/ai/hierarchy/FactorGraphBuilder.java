@@ -18,7 +18,7 @@ import java.util.Map;
 public class FactorGraphBuilder {
 
     private static final Logger logger = LoggerFactory.getLogger(FactorGraphBuilder.class);
-    private static final String DB_PATH = "markov_cache.db";
+    // DB_PATH is now injected
     private static final String CHAIN_VERSION = "v1";
 
     // Dependencies to inject into leaf nodes
@@ -36,7 +36,7 @@ public class FactorGraphBuilder {
 
     public FactorGraphBuilder(DigitMarkovModel rowModel, DigitMarkovModel colModel, DigitMarkovModel patchModel,
             MultiSequenceExtractor rowExtractor, MultiSequenceExtractor colExtractor,
-            SequenceExtractor patchExtractor, DigitPatch4x4UnigramModel patch4x4Model) {
+            SequenceExtractor patchExtractor, DigitPatch4x4UnigramModel patch4x4Model, String dbPath) {
         this.rowModel = rowModel;
         this.colModel = colModel;
         this.patchModel = patchModel;
@@ -47,14 +47,14 @@ public class FactorGraphBuilder {
 
         // Initialize DB
         try {
-            SqliteInitializer.initialize(DB_PATH);
-            logger.info("Initialized SQLite cache at {}", DB_PATH);
+            SqliteInitializer.initialize(dbPath);
+            logger.info("Initialized SQLite cache at {}", dbPath);
         } catch (SQLException e) {
             logger.error("Failed to initialize SQLite", e);
             throw new RuntimeException(e);
         }
-        this.imageDao = new DigitImageDao(DB_PATH);
-        this.resultDao = new MarkovChainResultDao(DB_PATH);
+        this.imageDao = new DigitImageDao(dbPath);
+        this.resultDao = new MarkovChainResultDao(dbPath);
     }
 
     public static class ConfigNode {
@@ -67,6 +67,8 @@ public class FactorGraphBuilder {
     }
 
     public static class ConfigRoot {
+        public String topology = "layered";
+        public String markov_data_directory;
         public List<ConfigNode> nodes;
         public String rootNodeId;
     }

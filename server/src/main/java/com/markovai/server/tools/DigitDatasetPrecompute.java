@@ -6,6 +6,7 @@ import com.markovai.server.ai.DigitPatch4x4UnigramModel;
 import com.markovai.server.ai.RowColumnDigitClassifier;
 import com.markovai.server.ai.hierarchy.DigitFactorNode;
 import com.markovai.server.ai.hierarchy.FactorGraphBuilder;
+import com.markovai.server.util.DataPathResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -45,7 +46,7 @@ public class DigitDatasetPrecompute {
         logger.info("Starting Offline Precompute on {}", datasetRoot);
 
         // Force cleanup of old cache
-        String dataDir = System.getProperty("markov.data.dir", ".");
+        String dataDir = DataPathResolver.resolveDataDirectory();
         File dbFile = new File(dataDir, "markov_cache.db");
         if (dbFile.exists()) {
             logger.info("Deleting existing DB file to force recomputation: {}", dbFile.getAbsolutePath());
@@ -104,7 +105,7 @@ public class DigitDatasetPrecompute {
                     digitClassifier.getRowExtractor(),
                     digitClassifier.getColumnExtractor(),
                     digitClassifier.getPatchExtractor(),
-                    patch4x4Model);
+                    patch4x4Model, DataPathResolver.resolveDbPath());
 
             Map<String, DigitFactorNode> nodes = builder.build(
                     DigitDatasetPrecompute.class.getResourceAsStream("/mrf_config.json"));

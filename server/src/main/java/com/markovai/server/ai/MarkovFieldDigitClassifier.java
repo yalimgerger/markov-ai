@@ -71,6 +71,18 @@ public class MarkovFieldDigitClassifier {
     }
 
     public double evaluateAccuracy(List<DigitImage> testData, boolean isTestSet) {
+        // Default behavior: use internal classification (equivalent to Layered)
+        // We do strictly internal logic here to avoid dependency cycles or overhead
+        return evaluateAccuracyInternal(testData, isTestSet, null);
+    }
+
+    public double evaluateAccuracy(List<DigitImage> testData, boolean isTestSet,
+            com.markovai.server.ai.inference.InferenceEngine engine) {
+        return evaluateAccuracyInternal(testData, isTestSet, engine);
+    }
+
+    private double evaluateAccuracyInternal(List<DigitImage> testData, boolean isTestSet,
+            com.markovai.server.ai.inference.InferenceEngine engine) {
         logger.info("Evaluating MRF accuracy on {} images (isTestSet={})...", testData.size(), isTestSet);
 
         com.markovai.server.ai.hierarchy.Patch4x4Node p4Node = findPatch4x4Node();
@@ -111,8 +123,19 @@ public class MarkovFieldDigitClassifier {
         int colUpdates = 0;
 
         for (DigitImage img : testData) {
-            ClassificationResult result = classifyWithDetails(img);
-            int predicted = result.getPredictedDigit();
+            int predicted;
+            double[] scores;
+
+            if (engine != null) {
+                com.markovai.server.ai.inference.InferenceResult result = engine.infer(img);
+                predicted = result.getPredictedDigit();
+                scores = result.getScores();
+            } else {
+                ClassificationResult result = classifyWithDetails(img);
+                predicted = result.getPredictedDigit();
+                scores = result.getLogLikelihoods();
+            }
+
             int trueDigit = img.label;
 
             if (predicted == trueDigit) {
@@ -122,7 +145,6 @@ public class MarkovFieldDigitClassifier {
 
             // Feedback Loop
             if (p4Node != null) {
-                double[] scores = result.getLogLikelihoods();
                 int rivalDigit = -1;
                 double rivalScore = Double.NEGATIVE_INFINITY;
                 for (int d = 0; d < 10; d++) {

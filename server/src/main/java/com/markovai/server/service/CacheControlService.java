@@ -1,8 +1,9 @@
 package com.markovai.server.service;
 
 import com.markovai.db.MarkovChainResultDao;
+import com.markovai.server.util.DataPathResolver;
 import org.springframework.stereotype.Service;
-import java.io.File;
+
 import java.sql.SQLException;
 
 @Service
@@ -11,8 +12,7 @@ public class CacheControlService {
     private static final String DB_PATH;
 
     static {
-        String dataDir = System.getProperty("markov.data.dir", ".");
-        DB_PATH = dataDir + File.separator + "markov_cache.db";
+        DB_PATH = DataPathResolver.resolveDbPath();
     }
     private final MarkovChainResultDao resultDao;
 

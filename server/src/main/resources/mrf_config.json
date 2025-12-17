@@ -1,4 +1,6 @@
 {
+    "topology": "layered",
+    "markov_data_directory": "/Users/yalimgerger/Documents/Antigravity/markov_data",
     "nodes": [
         {
             "id": "row",
