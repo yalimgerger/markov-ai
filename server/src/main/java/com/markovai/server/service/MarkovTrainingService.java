@@ -14,6 +14,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.stereotype.Service;
+import com.markovai.server.ai.learning.PayoffCalculator;
 
 import javax.imageio.ImageIO;
 import jakarta.annotation.PostConstruct;
@@ -419,8 +420,9 @@ public class MarkovTrainingService {
                 LeakageFreeResult result = performLeakageFreeProtocol(model, testData, trainData, patch4x4Model, seed,
                         false, useRowFeedback, useColFeedback, 2000, null);
                 results.add(result);
-                logger.info("Seed={}  Baseline={:.4f}  Frozen={:.4f}  Delta={:+.4f}",
-                        seed, result.baselineAcc, result.frozenAcc, result.getDelta());
+                logger.info("Seed={}  Baseline={}  Frozen={}  Delta={}",
+                        seed, String.format("%.4f", result.baselineAcc), String.format("%.4f", result.frozenAcc),
+                        String.format("%+.4f", result.getDelta()));
             }
 
             // Statistics
@@ -617,7 +619,20 @@ public class MarkovTrainingService {
         mrf.setPatch4x4Config(patchAdapt);
 
         // Run evaluation on ADAPT set (isTestSet=false)
-        mrf.evaluateAccuracy(phaseBAdapt, false, engine);
+        if ("network".equalsIgnoreCase(configRoot.topology)
+                && configRoot.learning != null
+                && configRoot.learning.payoff != null
+                && Boolean.TRUE.equals(configRoot.learning.payoff.enabled)) {
+
+            FactorGraphBuilder.PayoffConfig pCfg = configRoot.learning.payoff;
+            logger.info("Using Payoff-Weighted Learning: scheme={}, confStrong={}, scaleStrong={}",
+                    pCfg.scheme, pCfg.confStrong, pCfg.scaleStrong);
+
+            mrf.evaluateAccuracy(phaseBAdapt, false, engine,
+                    (res, label) -> PayoffCalculator.computePayoffScale(res, label, pCfg));
+        } else {
+            mrf.evaluateAccuracy(phaseBAdapt, false, engine);
+        }
         if (verbose)
             logger.info("Adaptation complete.");
 

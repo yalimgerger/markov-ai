@@ -127,6 +127,11 @@ public class Patch4x4Node implements DigitFactorNode {
     }
 
     public void applyFeedback(int[] symbols, int trueDigit, int rivalDigit, boolean wasCorrect, double margin) {
+        applyFeedback(symbols, trueDigit, rivalDigit, wasCorrect, margin, 1.0);
+    }
+
+    public void applyFeedback(int[] symbols, int trueDigit, int rivalDigit, boolean wasCorrect, double margin,
+            double updateScale) {
         // Must be enabled overall
         if (!feedbackCfg.enabled)
             return;
@@ -134,6 +139,11 @@ public class Patch4x4Node implements DigitFactorNode {
         // Must have learning specifically enabled
         if (!feedbackCfg.learningEnabled) {
             // Scoring is enabled but learning is frozen.
+            return;
+        }
+
+        // If external scale is 0, skip
+        if (updateScale <= 0.0) {
             return;
         }
 
@@ -159,6 +169,9 @@ public class Patch4x4Node implements DigitFactorNode {
             if (scale > 1.0)
                 scale = 1.0; // clamp
         }
+
+        // Apply external scale
+        scale *= updateScale;
 
         for (int s : symbols) {
             if (feedbackCfg.learningEnabled) {

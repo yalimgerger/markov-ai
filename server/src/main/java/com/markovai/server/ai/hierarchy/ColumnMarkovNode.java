@@ -163,7 +163,17 @@ public class ColumnMarkovNode implements DigitFactorNode {
     }
 
     public void applyFeedback(int[] transitionIds, int trueDigit, int rivalDigit, boolean wasCorrect, double margin) {
+        applyFeedback(transitionIds, trueDigit, rivalDigit, wasCorrect, margin, 1.0);
+    }
+
+    public void applyFeedback(int[] transitionIds, int trueDigit, int rivalDigit, boolean wasCorrect, double margin,
+            double updateScale) {
         if (!feedbackConfig.enabled || !feedbackConfig.learningEnabled) {
+            return;
+        }
+
+        // If external scale is 0, skip
+        if (updateScale <= 0.0) {
             return;
         }
 
@@ -180,6 +190,8 @@ public class ColumnMarkovNode implements DigitFactorNode {
         if (feedbackConfig.useMarginGating) {
             baseScale = Math.max(0.0, Math.min(1.0, feedbackConfig.marginTarget - margin));
         }
+
+        baseScale *= updateScale;
 
         // Updates
         for (int tid : transitionIds) {

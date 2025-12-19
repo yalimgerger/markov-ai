@@ -1,5 +1,5 @@
 {
-    "topology": "layered",
+    "topology": "network",
     "markov_data_directory": "/Users/yalimgerger/Documents/Antigravity/markov_data",
     "network": {
         "enabled": true,
@@ -10,6 +10,21 @@
         "stopEpsilon": 1e-4,
         "epsilon": 1e-9,
         "debugStats": false
+    },
+    "learning": {
+        "payoff": {
+            "enabled": true,
+            "scheme": "attractor_confidence",
+            "confStrong": 0.01,
+            "confWeak": 0.001,
+            "scaleStrong": 1.00,
+            "scaleWeakCorrect": 0.30,
+            "scaleWeakIncorrect": 0.20,
+            "requireConvergence": true,
+            "maxItersForConverged": 100,
+            "applyToCorrect": true,
+            "applyToIncorrect": true
+        }
     },
     "nodes": [
         {

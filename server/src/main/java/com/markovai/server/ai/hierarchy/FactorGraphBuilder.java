@@ -77,10 +77,29 @@ public class FactorGraphBuilder {
         public Boolean debugStats;
     }
 
+    public static class PayoffConfig {
+        public Boolean enabled;
+        public String scheme;
+        public Double confStrong;
+        public Double confWeak;
+        public Double scaleStrong;
+        public Double scaleWeakCorrect;
+        public Double scaleWeakIncorrect;
+        public Boolean requireConvergence;
+        public Integer maxItersForConverged;
+        public Boolean applyToCorrect;
+        public Boolean applyToIncorrect;
+    }
+
+    public static class LearningConfig {
+        public PayoffConfig payoff;
+    }
+
     public static class ConfigRoot {
         public String topology = "layered";
         public String markov_data_directory;
         public NetworkConfig network;
+        public LearningConfig learning;
         public List<ConfigNode> nodes;
         public String rootNodeId;
     }
