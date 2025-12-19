@@ -32,10 +32,11 @@
             "useTrajectory": true,
             "trajectoryMinStep": 2,
             "winnerReinforce": 1.0,
-            "rivalPenalize": 1.0,
+            "rivalPenalize": 0.5,
             "deltaWeightMode": "belief_delta",
             "minDeltaGate": 1e-5,
-            "normalizeTrajectory": true
+            "normalizeTrajectory": true,
+            "penalizeCap": 0.05
         }
     },
     "nodes": [

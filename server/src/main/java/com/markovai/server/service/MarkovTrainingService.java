@@ -838,13 +838,20 @@ public class MarkovTrainingService {
                         double rMult = (bCfg.rivalPenalize != null) ? bCfg.rivalPenalize : 1.0;
 
                         if (normalize) {
-                            wReinforce = sumPosDw / denom;
-                            wPenalize = sumPosDr / denom;
+                            // Raw weights
+                            double wPenalizeRaw = sumPosDr / denom;
+                            // Cap penalization
+                            double cap = (bCfg.penalizeCap != null) ? bCfg.penalizeCap : 0.10;
+                            wPenalize = Math.min(wPenalizeRaw, cap);
+
+                            // Renormalize reinforce to take the rest
+                            wReinforce = 1.0 - wPenalize;
 
                             reinforceScale = payoffScale * wMult * wReinforce;
                             penalizeScale = payoffScale * rMult * wPenalize;
                         } else {
                             // Old logic (raw sums)
+                            // This branch essentially ignored if normalizeTrajectory=true (default)
                             reinforceScale = payoffScale * wMult * sumPosDw;
                             penalizeScale = payoffScale * rMult * sumPosDr;
                         }

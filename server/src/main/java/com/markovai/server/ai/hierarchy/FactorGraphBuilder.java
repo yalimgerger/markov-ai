@@ -102,6 +102,7 @@ public class FactorGraphBuilder {
         public String deltaWeightMode;
         public Double minDeltaGate;
         public Boolean normalizeTrajectory;
+        public Double penalizeCap;
     }
 
     public static class LearningConfig {
