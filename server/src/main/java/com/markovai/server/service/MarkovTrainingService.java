@@ -373,6 +373,76 @@ public class MarkovTrainingService {
         }
     }
 
+    private static class BasinMetrics {
+        int count = 0;
+        double sumReinforceScale = 0.0;
+        double sumPenalizeScale = 0.0;
+        double sumPosDw = 0.0;
+        double sumPosDr = 0.0;
+        double sumWReinforce = 0.0;
+        double sumWPenalize = 0.0;
+        double sumPayoffScale = 0.0;
+        int countUniformFallback = 0;
+        int countCorrectAttractor = 0;
+        int countIncorrectAttractor = 0;
+        List<Integer> iterations = new ArrayList<>();
+        long sumIters = 0;
+
+        void update(double reinforce, double penalize, boolean fallback, double posDw, double posDr,
+                boolean correctAttractor, int iters, double wReinforce, double wPenalize, double payoffScale) {
+            count++;
+            sumReinforceScale += reinforce;
+            sumPenalizeScale += penalize;
+            sumPosDw += posDw;
+            sumPosDr += posDr;
+            sumWReinforce += wReinforce;
+            sumWPenalize += wPenalize;
+            sumPayoffScale += payoffScale;
+            if (fallback)
+                countUniformFallback++;
+            if (correctAttractor)
+                countCorrectAttractor++;
+            else
+                countIncorrectAttractor++;
+            iterations.add(iters);
+            sumIters += iters;
+        }
+
+        void printSummary(Logger logger) {
+            if (count > 0) {
+                String msg = String.format(
+                        "Basin Metrics (N=%d): MeanPayoff=%.4f MeanReinforce=%.4f MeanPenalize=%.4f " +
+                                "MeanWeights(W=%.4f, R=%.4f) Fallback=%.1f%% CorrectAttractor=%.1f%% MeanIters=%.1f",
+                        count,
+                        sumPayoffScale / count,
+                        sumReinforceScale / count,
+                        sumPenalizeScale / count,
+                        sumWReinforce / count,
+                        sumWPenalize / count,
+                        (countUniformFallback * 100.0) / count,
+                        (countCorrectAttractor * 100.0) / count,
+                        (double) sumIters / count);
+                logger.info(msg);
+            } else {
+                logger.info("Basin Metrics: No updates recorded (N=0)");
+            }
+            // Reset
+            count = 0;
+            sumReinforceScale = 0;
+            sumPenalizeScale = 0;
+            sumPosDw = 0;
+            sumPosDr = 0;
+            sumWReinforce = 0;
+            sumWPenalize = 0;
+            sumPayoffScale = 0;
+            countUniformFallback = 0;
+            countCorrectAttractor = 0;
+            countIncorrectAttractor = 0;
+            iterations.clear();
+            sumIters = 0;
+        }
+    }
+
     private static class LeakageFreeResult {
         long seed;
         double baselineAcc;
@@ -387,6 +457,7 @@ public class MarkovTrainingService {
         public double getDelta() {
             return frozenAcc - baselineAcc;
         }
+
     }
 
     private void runLeakageFreeMultiSeedVerification(RowColumnDigitClassifier model, List<DigitImage> testData,
@@ -619,17 +690,207 @@ public class MarkovTrainingService {
         mrf.setPatch4x4Config(patchAdapt);
 
         // Run evaluation on ADAPT set (isTestSet=false)
-        if ("network".equalsIgnoreCase(configRoot.topology)
-                && configRoot.learning != null
-                && configRoot.learning.payoff != null
-                && Boolean.TRUE.equals(configRoot.learning.payoff.enabled)) {
+        if ("network".equalsIgnoreCase(configRoot.topology)) {
+            boolean basinEnabled = (configRoot.learning != null && configRoot.learning.basin != null
+                    && Boolean.TRUE.equals(configRoot.learning.basin.enabled));
+            boolean payoffEnabled = (configRoot.learning != null && configRoot.learning.payoff != null
+                    && Boolean.TRUE.equals(configRoot.learning.payoff.enabled));
 
-            FactorGraphBuilder.PayoffConfig pCfg = configRoot.learning.payoff;
-            logger.info("Using Payoff-Weighted Learning: scheme={}, confStrong={}, scaleStrong={}",
-                    pCfg.scheme, pCfg.confStrong, pCfg.scaleStrong);
+            final FactorGraphBuilder.PayoffConfig pCfg = (configRoot.learning != null) ? configRoot.learning.payoff
+                    : null;
+            final FactorGraphBuilder.BasinConfig bCfg = (configRoot.learning != null) ? configRoot.learning.basin
+                    : null;
 
-            mrf.evaluateAccuracy(phaseBAdapt, false, engine,
-                    (res, label) -> PayoffCalculator.computePayoffScale(res, label, pCfg));
+            if (basinEnabled && bCfg != null && payoffEnabled) {
+                logger.info("Using BASIN-AWARE Learning: scheme={}, trajectory={}, gate={}", bCfg.scheme,
+                        bCfg.useTrajectory, bCfg.minDeltaGate);
+                BasinMetrics basinMetrics = new BasinMetrics();
+
+                mrf.evaluateAccuracy(phaseBAdapt, false, engine, (img, res, classifier, trueDigit, scores) -> {
+                    // 1. Calculate base Payoff Scale
+                    double payoffScale = (pCfg != null && res != null)
+                            ? PayoffCalculator.computePayoffScale(res, trueDigit, pCfg)
+                            : 1.0;
+
+                    // 2. Identify Winner and Rival from Trajectory
+                    int winner = -1;
+                    int rival = -1;
+                    double winningScore = Double.NEGATIVE_INFINITY;
+                    double rivalScore = Double.NEGATIVE_INFINITY;
+
+                    // Using final scores from result if available (which should be b_final if using
+                    // NetworkInferenceResult)
+                    // or just using the 'scores' passed in.
+                    // Note: 'scores' in FeedbackStrategy are typically LogLikelihoods or Softmax
+                    // depending on engine.
+                    // For Network, getBelief() is better.
+                    double[] belief = null;
+                    if (res instanceof com.markovai.server.ai.inference.NetworkInferenceResult) {
+                        belief = res.getBelief();
+                    }
+
+                    if (belief != null) {
+                        // Find top2
+                        for (int d = 0; d < 10; d++) {
+                            if (belief[d] > winningScore) {
+                                rivalScore = winningScore;
+                                rival = winner;
+                                winningScore = belief[d];
+                                winner = d;
+                            } else if (belief[d] > rivalScore) {
+                                rivalScore = belief[d];
+                                rival = d;
+                            }
+                        }
+                    } else {
+                        // Fallback to scores
+                        for (int d = 0; d < 10; d++) {
+                            if (scores[d] > winningScore) {
+                                rivalScore = winningScore;
+                                rival = winner;
+                                winningScore = scores[d];
+                                winner = d;
+                            } else if (scores[d] > rivalScore) {
+                                rivalScore = scores[d];
+                                rival = d;
+                            }
+                        }
+                    }
+
+                    // 3. Compute Trajectory Weights
+                    double sumPosDw = 0.0;
+                    double sumPosDr = 0.0;
+
+                    int iters = res.getIterations();
+                    boolean useTrajectory = Boolean.TRUE.equals(bCfg.useTrajectory) &&
+                            res instanceof com.markovai.server.ai.inference.NetworkInferenceResult;
+
+                    if (useTrajectory && iters >= bCfg.trajectoryMinStep) {
+                        com.markovai.server.ai.inference.NetworkInferenceResult netRes = (com.markovai.server.ai.inference.NetworkInferenceResult) res;
+                        java.util.List<double[]> traj = netRes.getBeliefTrajectory();
+
+                        if (traj != null && traj.size() > 1) {
+                            // t=1 to T
+                            for (int t = 1; t < traj.size(); t++) {
+                                double[] curr = traj.get(t);
+                                double[] prev = traj.get(t - 1);
+
+                                double dw = curr[winner] - prev[winner];
+                                double dr = curr[rival] - prev[rival];
+
+                                if (dw > 0)
+                                    sumPosDw += dw;
+                                if (dr > 0)
+                                    sumPosDr += dr;
+                            }
+                        } else {
+                            // Fallback uniform if trajectory missing
+                            sumPosDw = 1.0;
+                            sumPosDr = 1.0; // Normalized later? No, usually small.
+                            // If missing, we treat as uniform?
+                            // Step prompt says: "If both sums are ~0, fall back to uniform."
+                        }
+                    } else {
+                        // Fallback uniform
+                        sumPosDw = 1.0; // Equivalent to 1.0 multiplier? relative to minDeltaGate?
+                        sumPosDr = 0.0; // If fallback, what do we do?
+                        // "fall back to existing Step 3 payoffScale behavior (uniform updateScale)"
+                        // This means reinforceScale = payoffScale, penalizeScale = payoffScale (if
+                        // doing dual update).
+                        // Standard update: true=trueDigit, rival=scoreRival.
+                    }
+                    double wReinforce = 0.0;
+                    double wPenalize = 0.0;
+
+                    // 4. Determine Targets and Scales
+                    double reinforceScale = 0.0;
+                    double penalizeScale = 0.0;
+                    int targetW = -1;
+                    int targetR = -1;
+                    boolean fallback = false;
+
+                    double minGate = (bCfg.minDeltaGate != null) ? bCfg.minDeltaGate : 1e-5;
+
+                    double denom = sumPosDw + sumPosDr + 1e-9;
+                    boolean normalize = (bCfg.normalizeTrajectory != null && bCfg.normalizeTrajectory) ||
+                            (bCfg.normalizeTrajectory == null && true); // Default true
+
+                    if ((normalize && denom < 1e-8) || (!normalize && sumPosDw < minGate && sumPosDr < minGate)) {
+                        // Fallback to uniform standard
+                        fallback = true;
+                        reinforceScale = payoffScale; // Standard
+                        penalizeScale = payoffScale; // Standard
+                        // Standard means: True gets +, Rival gets -
+                        targetW = trueDigit;
+                        targetR = rival; // The rival from belief/scores
+
+                    } else {
+                        // Basin Weighted
+                        if (winner == trueDigit) {
+                            targetW = trueDigit;
+                            targetR = rival;
+                        } else {
+                            targetW = trueDigit;
+                            targetR = winner; // The wrong attractor is the rival to penalize
+                        }
+
+                        double wMult = (bCfg.winnerReinforce != null) ? bCfg.winnerReinforce : 1.0;
+                        double rMult = (bCfg.rivalPenalize != null) ? bCfg.rivalPenalize : 1.0;
+
+                        if (normalize) {
+                            wReinforce = sumPosDw / denom;
+                            wPenalize = sumPosDr / denom;
+
+                            reinforceScale = payoffScale * wMult * wReinforce;
+                            penalizeScale = payoffScale * rMult * wPenalize;
+                        } else {
+                            // Old logic (raw sums)
+                            reinforceScale = payoffScale * wMult * sumPosDw;
+                            penalizeScale = payoffScale * rMult * sumPosDr;
+                        }
+                    }
+
+                    boolean correctAttractor = (winner == trueDigit);
+                    basinMetrics.update(reinforceScale, penalizeScale, fallback, sumPosDw, sumPosDr, correctAttractor,
+                            iters, wReinforce, wPenalize, payoffScale);
+
+                    // 5. Apply Updates
+                    // Calculate margin for standard logging/gating usage inside node
+                    double margin = (belief != null && targetW >= 0 && targetR >= 0)
+                            ? (belief[targetW] - belief[targetR])
+                            : 0.0;
+                    boolean wasCorrect = (res.getPredictedDigit() == trueDigit);
+
+                    if (fallback) {
+                        // Standard combined update
+                        classifier.applyFeedbackToNodes(img, targetW, targetR, reinforceScale, wasCorrect, margin);
+                    } else {
+                        // Independent updates
+                        // Reinforce Winner (targetW)
+                        if (targetW != -1 && reinforceScale > 0) {
+                            classifier.applyFeedbackToNodes(img, targetW, -1, reinforceScale, wasCorrect, margin);
+                        }
+                        // Penalize Rival (targetR)
+                        if (targetR != -1 && penalizeScale > 0) {
+                            // Penalize means call with: true=-1, rival=targetR, scale=penalizeScale
+                            // (since applyFeedback does adj[rival] -= scale)
+                            classifier.applyFeedbackToNodes(img, -1, targetR, penalizeScale, wasCorrect, margin);
+                        }
+                    }
+
+                });
+                basinMetrics.printSummary(logger);
+
+            } else if (payoffEnabled) {
+                FactorGraphBuilder.PayoffConfig pCfgLocal = pCfg; // Effectively final
+                logger.info("Using Payoff-Weighted Learning: scheme={}, confStrong={}, scaleStrong={}",
+                        pCfgLocal.scheme, pCfgLocal.confStrong, pCfgLocal.scaleStrong);
+
+                mrf.evaluateAccuracy(phaseBAdapt, false, engine,
+                        (res, label) -> PayoffCalculator.computePayoffScale(res, label, pCfgLocal));
+            } else {
+                mrf.evaluateAccuracy(phaseBAdapt, false, engine);
+            }
         } else {
             mrf.evaluateAccuracy(phaseBAdapt, false, engine);
         }

@@ -24,6 +24,18 @@
             "maxItersForConverged": 100,
             "applyToCorrect": true,
             "applyToIncorrect": true
+        },
+        "basin": {
+            "enabled": false,
+            "scheme": "winner_vs_rival",
+            "rivalSelection": "top2_final",
+            "useTrajectory": true,
+            "trajectoryMinStep": 2,
+            "winnerReinforce": 1.0,
+            "rivalPenalize": 1.0,
+            "deltaWeightMode": "belief_delta",
+            "minDeltaGate": 1e-5,
+            "normalizeTrajectory": true
         }
     },
     "nodes": [

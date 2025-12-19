@@ -12,11 +12,13 @@ public class NetworkInferenceEngine implements InferenceEngine {
     private static final Logger logger = LoggerFactory.getLogger(NetworkInferenceEngine.class);
 
     private final MarkovFieldDigitClassifier classifier;
+    private final FactorGraphBuilder.ConfigRoot fullConfig;
     private final FactorGraphBuilder.NetworkConfig config;
 
-    public NetworkInferenceEngine(MarkovFieldDigitClassifier classifier, FactorGraphBuilder.NetworkConfig config) {
+    public NetworkInferenceEngine(MarkovFieldDigitClassifier classifier, FactorGraphBuilder.ConfigRoot fullConfig) {
         this.classifier = classifier;
-        this.config = config;
+        this.fullConfig = fullConfig;
+        this.config = (fullConfig != null) ? fullConfig.network : null;
     }
 
     @Override
@@ -59,6 +61,15 @@ public class NetworkInferenceEngine implements InferenceEngine {
         double prevDelta = Double.MAX_VALUE;
 
         // 3. Attractor Loop
+        java.util.List<double[]> trajectory = null;
+        if (fullConfig != null && fullConfig.learning != null && fullConfig.learning.basin != null &&
+                fullConfig.learning.basin.enabled != null && fullConfig.learning.basin.enabled &&
+                fullConfig.learning.basin.useTrajectory != null && fullConfig.learning.basin.useTrajectory) {
+            trajectory = new java.util.ArrayList<>();
+            // Add initial belief
+            trajectory.add(java.util.Arrays.copyOf(bPrev, 10)); // b0
+        }
+
         for (int i = 0; i < maxIters; i++) {
             iters++;
 
@@ -73,6 +84,11 @@ public class NetworkInferenceEngine implements InferenceEngine {
             // b = (1 - damping) * b_prev + damping * b_raw
             for (int d = 0; d < 10; d++) {
                 b[d] = (1.0 - damping) * bPrev[d] + damping * bRaw[d];
+            }
+
+            // Capture trajectory step (b_t)
+            if (trajectory != null) {
+                trajectory.add(java.util.Arrays.copyOf(b, 10));
             }
 
             // Check convergence
@@ -132,6 +148,7 @@ public class NetworkInferenceEngine implements InferenceEngine {
                 initialEntropy,
                 finalEntropy,
                 finalMaxDelta,
-                oscillationDetected);
+                oscillationDetected,
+                trajectory);
     }
 }

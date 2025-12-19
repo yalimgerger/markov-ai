@@ -194,18 +194,23 @@ public class Patch4x4Node implements DigitFactorNode {
 
             double etaEff = feedbackCfg.eta * scale * scaleFreq;
 
-            adj[trueDigit][s] += etaEff;
-            adj[rivalDigit][s] -= etaEff;
+            if (trueDigit >= 0 && trueDigit < 10) {
+                adj[trueDigit][s] += etaEff;
+                double m = feedbackCfg.maxAdjAbs;
+                if (adj[trueDigit][s] > m)
+                    adj[trueDigit][s] = m;
+                if (adj[trueDigit][s] < -m)
+                    adj[trueDigit][s] = -m;
+            }
 
-            double m = feedbackCfg.maxAdjAbs;
-            if (adj[trueDigit][s] > m)
-                adj[trueDigit][s] = m;
-            if (adj[trueDigit][s] < -m)
-                adj[trueDigit][s] = -m;
-            if (adj[rivalDigit][s] > m)
-                adj[rivalDigit][s] = m;
-            if (adj[rivalDigit][s] < -m)
-                adj[rivalDigit][s] = -m;
+            if (rivalDigit >= 0 && rivalDigit < 10) {
+                adj[rivalDigit][s] -= etaEff;
+                double m = feedbackCfg.maxAdjAbs;
+                if (adj[rivalDigit][s] > m)
+                    adj[rivalDigit][s] = m;
+                if (adj[rivalDigit][s] < -m)
+                    adj[rivalDigit][s] = -m;
+            }
         }
 
         updatesCounter += symbols.length;

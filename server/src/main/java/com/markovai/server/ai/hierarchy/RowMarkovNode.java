@@ -217,19 +217,28 @@ public class RowMarkovNode implements DigitFactorNode {
             double effEta = feedbackConfig.eta * baseScale * scaleFreq;
 
             // Symmetric update
-            adj[trueDigit][tid] += effEta;
-            adj[rivalDigit][tid] -= effEta;
+            if (trueDigit >= 0 && trueDigit < NUM_DIGITS) {
+                adj[trueDigit][tid] += effEta;
+            }
+            if (rivalDigit >= 0 && rivalDigit < NUM_DIGITS) {
+                adj[rivalDigit][tid] -= effEta;
+            }
 
             // Clamp absolute value
-            if (adj[trueDigit][tid] > feedbackConfig.maxAdjAbs)
-                adj[trueDigit][tid] = feedbackConfig.maxAdjAbs;
-            if (adj[trueDigit][tid] < -feedbackConfig.maxAdjAbs)
-                adj[trueDigit][tid] = -feedbackConfig.maxAdjAbs;
+            // Clamp absolute value
+            if (trueDigit >= 0 && trueDigit < NUM_DIGITS) {
+                if (adj[trueDigit][tid] > feedbackConfig.maxAdjAbs)
+                    adj[trueDigit][tid] = feedbackConfig.maxAdjAbs;
+                if (adj[trueDigit][tid] < -feedbackConfig.maxAdjAbs)
+                    adj[trueDigit][tid] = -feedbackConfig.maxAdjAbs;
+            }
 
-            if (adj[rivalDigit][tid] > feedbackConfig.maxAdjAbs)
-                adj[rivalDigit][tid] = feedbackConfig.maxAdjAbs;
-            if (adj[rivalDigit][tid] < -feedbackConfig.maxAdjAbs)
-                adj[rivalDigit][tid] = -feedbackConfig.maxAdjAbs;
+            if (rivalDigit >= 0 && rivalDigit < NUM_DIGITS) {
+                if (adj[rivalDigit][tid] > feedbackConfig.maxAdjAbs)
+                    adj[rivalDigit][tid] = feedbackConfig.maxAdjAbs;
+                if (adj[rivalDigit][tid] < -feedbackConfig.maxAdjAbs)
+                    adj[rivalDigit][tid] = -feedbackConfig.maxAdjAbs;
+            }
 
             // Decay logic
             if (feedbackConfig.applyDecayEveryNUpdates > 0 &&

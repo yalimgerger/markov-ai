@@ -25,7 +25,7 @@ public class InferenceEngineFactory {
                 return layered;
             case "network":
                 // If config is null, pass null - logic handles default fallback
-                return new NetworkInferenceEngine(classifier, config != null ? config.network : null);
+                return new NetworkInferenceEngine(classifier, config);
             default:
                 logger.warn("Unknown topology '{}', defaulting to 'layered'", topology);
                 return layered;

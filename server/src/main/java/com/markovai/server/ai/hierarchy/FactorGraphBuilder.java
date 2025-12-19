@@ -91,8 +91,22 @@ public class FactorGraphBuilder {
         public Boolean applyToIncorrect;
     }
 
+    public static class BasinConfig {
+        public Boolean enabled;
+        public String scheme;
+        public String rivalSelection;
+        public Boolean useTrajectory;
+        public Integer trajectoryMinStep;
+        public Double winnerReinforce;
+        public Double rivalPenalize;
+        public String deltaWeightMode;
+        public Double minDeltaGate;
+        public Boolean normalizeTrajectory;
+    }
+
     public static class LearningConfig {
         public PayoffConfig payoff;
+        public BasinConfig basin;
     }
 
     public static class ConfigRoot {

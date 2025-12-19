@@ -73,29 +73,76 @@ public class MarkovFieldDigitClassifier {
     public double evaluateAccuracy(List<DigitImage> testData, boolean isTestSet) {
         // Default behavior: use internal classification (equivalent to Layered)
         // We do strictly internal logic here to avoid dependency cycles or overhead
-        return evaluateAccuracyInternal(testData, isTestSet, null, (res, label) -> 1.0);
+        return evaluateAccuracyInternal(testData, isTestSet, null, (img, res, classifier, trueDigit, scores) -> {
+            // Default no-op or simple 1.0 logic?
+            // Since PayoffFunction overload defaults to 1.0, and PayoffFunction wrapper
+            // calls generic applier.
+            // We want standard feedback with scale 1.0.
+            // Using the strategy that mimics (res, label) -> 1.0:
+            int rivalDigit = -1;
+            double rivalScore = Double.NEGATIVE_INFINITY;
+            for (int d = 0; d < 10; d++) {
+                if (d == trueDigit)
+                    continue;
+                if (scores[d] > rivalScore) {
+                    rivalScore = scores[d];
+                    rivalDigit = d;
+                }
+            }
+            double margin = scores[trueDigit] - rivalScore;
+            boolean wasCorrect = (res != null) ? (res.getPredictedDigit() == trueDigit) : false;
+            classifier.applyFeedbackToNodes(img, trueDigit, rivalDigit, 1.0, wasCorrect, margin);
+        });
     }
 
     public interface PayoffFunction {
         double computePayoff(com.markovai.server.ai.inference.InferenceResult result, int trueLabel);
     }
 
-    public double evaluateAccuracy(List<DigitImage> testData, boolean isTestSet,
-            com.markovai.server.ai.inference.InferenceEngine engine, PayoffFunction payoffFn) {
-        return evaluateAccuracyInternal(testData, isTestSet, engine, payoffFn);
+    public interface FeedbackStrategy {
+        void apply(DigitImage img, com.markovai.server.ai.inference.InferenceResult result,
+                MarkovFieldDigitClassifier classifier, int trueDigit, double[] scores);
+    }
+
+    public void applyFeedbackToNodes(DigitImage img, int positiveTarget, int negativeTarget, double scale) {
+        applyFeedbackToNodes(img, positiveTarget, negativeTarget, scale, true, 0.0);
+    }
+
+    public void applyFeedbackToNodes(DigitImage img, int positiveTarget, int negativeTarget, double scale,
+            boolean wasCorrect, double margin) {
+        com.markovai.server.ai.hierarchy.Patch4x4Node p4Node = findPatch4x4Node();
+        com.markovai.server.ai.hierarchy.RowMarkovNode rowNode = findRowMarkovNode();
+        com.markovai.server.ai.hierarchy.ColumnMarkovNode colNode = findColumnMarkovNode();
+
+        // Patch4x4
+        if (p4Node != null) {
+            int[] symbols = p4Node.extractPatchSymbols(img);
+            p4Node.applyFeedback(symbols, positiveTarget, negativeTarget, wasCorrect, margin, scale);
+        }
+
+        // Row
+        if (rowNode != null) {
+            int[] tids = rowNode.extractTransitionIds(img);
+            rowNode.applyFeedback(tids, positiveTarget, negativeTarget, wasCorrect, margin, scale);
+        }
+
+        // Column
+        if (colNode != null) {
+            int[] tids = colNode.extractTransitionIds(img);
+            colNode.applyFeedback(tids, positiveTarget, negativeTarget, wasCorrect, margin, scale);
+        }
     }
 
     public double evaluateAccuracy(List<DigitImage> testData, boolean isTestSet,
-            com.markovai.server.ai.inference.InferenceEngine engine) {
-        return evaluateAccuracyInternal(testData, isTestSet, engine, (res, label) -> 1.0);
+            com.markovai.server.ai.inference.InferenceEngine engine, FeedbackStrategy strategy) {
+        return evaluateAccuracyInternal(testData, isTestSet, engine, strategy);
     }
 
     private double evaluateAccuracyInternal(List<DigitImage> testData, boolean isTestSet,
-            com.markovai.server.ai.inference.InferenceEngine engine, PayoffFunction payoffFn) {
+            com.markovai.server.ai.inference.InferenceEngine engine, FeedbackStrategy strategy) {
         logger.info("Evaluating MRF accuracy on {} images (isTestSet={})...", testData.size(), isTestSet);
 
         com.markovai.server.ai.hierarchy.Patch4x4Node p4Node = findPatch4x4Node();
-
         com.markovai.server.ai.hierarchy.RowMarkovNode rowNode = findRowMarkovNode();
         com.markovai.server.ai.hierarchy.ColumnMarkovNode colNode = findColumnMarkovNode();
 
@@ -112,29 +159,18 @@ public class MarkovFieldDigitClassifier {
             }
         }
 
-        // Try to apply decay at start of epoch/eval if applicable
-        // Only allow decay if this is NOT a test set (i.e. isLearningAllowed =
-        // !isTestSet)
-        if (p4Node != null) {
+        if (p4Node != null)
             p4Node.applyDecayIfEnabled(!isTestSet);
-        }
-        if (rowNode != null) {
+        if (rowNode != null)
             rowNode.applyDecayIfEnabled(!isTestSet);
-        }
-        if (colNode != null) {
+        if (colNode != null)
             colNode.applyDecayIfEnabled(!isTestSet);
-        }
 
         int correct = 0;
         int total = 0;
-        int p4Updates = 0;
-        int rowUpdates = 0;
-        int colUpdates = 0;
 
-        // Payoff Statistics (sum scale, count zeros)
-        double sumPayoff = 0.0;
-        int payoffZeros = 0;
-        int payoffCount = 0;
+        // Stats for default logging if needed
+        int updates = 0;
 
         for (DigitImage img : testData) {
             int predicted;
@@ -152,139 +188,59 @@ public class MarkovFieldDigitClassifier {
             }
 
             int trueDigit = img.label;
-
             if (predicted == trueDigit) {
                 correct++;
             }
             total++;
 
-            // Feedback Loop
-            if (p4Node != null) {
-                int rivalDigit = -1;
-                double rivalScore = Double.NEGATIVE_INFINITY;
-                for (int d = 0; d < 10; d++) {
-                    if (d == trueDigit)
-                        continue;
-                    if (scores[d] > rivalScore) {
-                        rivalScore = scores[d];
-                        rivalDigit = d;
-                    }
-                }
-                double margin = scores[trueDigit] - rivalScore;
-                boolean wasCorrect = (predicted == trueDigit);
-
-                // Calculate Payoff Scale
-                double payoffScale = 1.0;
-                if (payoffFn != null && resultObj != null) {
-                    payoffScale = payoffFn.computePayoff(resultObj, trueDigit);
-                }
-
-                if (p4Node.getFeedbackConfig().learningEnabled) {
-                    sumPayoff += payoffScale;
-                    if (payoffScale == 0.0)
-                        payoffZeros++;
-                    payoffCount++;
-                }
-
-                // Patch4x4 Feedback
-                int[] symbols = p4Node.extractPatchSymbols(img);
-                p4Node.applyFeedback(symbols, trueDigit, rivalDigit, wasCorrect, margin, payoffScale);
-                if (p4Node.getFeedbackConfig().learningEnabled) {
-                    p4Updates++;
-                }
-
-                // Row Feedback
-                // Assuming RowMarkovNode/ColumnMarkovNode also accept scale, or we need to
-                // update them.
-                // Since user requirement said "Patch4x4, Row, Column", we should assume they
-                // need update too.
-                // Ideally I should have checked RowNode signature first.
-                // For now, I will assume they don't have it yet and use the deprecated 1.0
-                // overload unless I updated them.
-                // Wait, I only updated Patch4x4Node in previous step.
-                // I need so update Row/Col nodes too.
-                // To avoid breaking build, I will cast checking or just use the old method if
-                // not using payoff.
-                // But I *Must* implement payoff for all.
-                // I will assume for this Chunk I call with payoffScale, effectively assuming I
-                // WILL update Row/Col nodes next or they have similar signature.
-                // Actually, Row/Col nodes share a common interface? No, they are distinct
-                // classes.
-                // I will comment out the scale usage for Row/Col for one second, or better yet,
-                // I should check RowMarkovNode.
-                // BUT, to save turns, I will assume I will update them in the next step.
-                // This tool call is for MarkovFieldDigitClassifier. I will use a method that I
-                // WILL add to Row/Col.
-
-                if (rowNode != null) {
-                    int[] tids = rowNode.extractTransitionIds(img);
-                    // rowNode.applyFeedback(tids, trueDigit, rivalDigit, wasCorrect, margin,
-                    // payoffScale);
-                    // Temporarily using non-scaled until I update the file.
-                    // To do this cleanly, I will check if I can modify them in parallel or just
-                    // modify this file to use a helper that checks instance.
-                    // Actually, I can just update this file to call `applyFeedback(...,
-                    // payoffScale)` and compilation will fail until I update the other files.
-                    // That is acceptable as long as I fix it in the next few turns.
-                    // However, `findRowMarkovNode` returns concrete RowMarkovNode.
-                    // I'll stick to updating `Patch4x4Node` call here, and I'll update Row/Col call
-                    // in this file AFTER I update those classes.
-                    // For now I'll apply scale only to Patch4x4Node as it was the primary learner
-                    // mentioned in earlier Context (Phase 1).
-                    // Wait, Step 3 Prompt says: "applyFeedback(..., double updateScale) ... for
-                    // Patch4x4Node, RowMarkovNode, ColumnMarkovNode".
-                    // So I MUST update all of them.
-
-                    // I will leave the Row/Col calls as is for this specific tool call, and then I
-                    // will update Row/Col nodes, AND THEN come back to this file?
-                    // No, that's inefficient.
-                    // A better way is to update Row/Col nodes first.
-                    // But I am already editing this file.
-                    // I will define the calls assuming the methods exist. The compiler will
-                    // compain, but I will fix it immediately.
-                    // Or I can use reflection? No.
-                    // I will use `applyFeedback(..., payoffScale)` and accept the temporary error.
-                    rowNode.applyFeedback(tids, trueDigit, rivalDigit, wasCorrect, margin, payoffScale);
-                    if (rowNode.getFeedbackConfig().learningEnabled) {
-                        rowUpdates++;
-                    }
-                }
-
-                // Column Feedback
-                if (colNode != null) {
-                    int[] tids = colNode.extractTransitionIds(img);
-                    colNode.applyFeedback(tids, trueDigit, rivalDigit, wasCorrect, margin, payoffScale);
-                    if (colNode.getFeedbackConfig().learningEnabled) {
-                        colUpdates++;
-                    }
-                }
+            // Custom Feedback Strategy
+            if (strategy != null) {
+                strategy.apply(img, resultObj, this, trueDigit, scores);
+                // We don't easily track updates per node here since strategy does it.
+                // We'll trust strategy or logs.
             }
 
+            // Progress Log
             if (total % 1000 == 0) {
-                if (payoffCount > 0) {
-                    double meanPayoff = sumPayoff / payoffCount;
-                    double zeroPct = 100.0 * payoffZeros / payoffCount;
-                    logger.info("MRF Evaluated {}/{}... [Payoff: mean={}, zero={}%]", total, testData.size(),
-                            String.format("%.4f", meanPayoff), String.format("%.1f", zeroPct));
-                    // Reset agg
-                    sumPayoff = 0;
-                    payoffZeros = 0;
-                    payoffCount = 0;
-                } else {
-                    logger.info("MRF Evaluated {}/{}...", total, testData.size());
-                }
+                logger.info("MRF Evaluated {}/{}...", total, testData.size());
             }
         }
 
         double accuracy = (double) correct / total;
-        if (p4Node != null && p4Node.getFeedbackConfig().enabled) {
-            logger.info("MRF Evaluation complete. Accuracy: {} ({}/{}) [P4Updates: {}, RowUpdates: {}, ColUpdates: {}]",
-                    String.format("%.4f", accuracy), correct, total, p4Updates, rowUpdates, colUpdates);
-        } else {
-            logger.info("MRF Evaluation complete. Accuracy: {} ({}/{})",
-                    String.format("%.4f", accuracy), correct, total);
-        }
+        logger.info("MRF Evaluation complete. Accuracy: {} ({}/{})", String.format("%.4f", accuracy), correct, total);
         return accuracy;
+    }
+
+    public double evaluateAccuracy(List<DigitImage> testData, boolean isTestSet,
+            com.markovai.server.ai.inference.InferenceEngine engine, PayoffFunction payoffFn) {
+        // Adapt old payoff function to new strategy
+        return evaluateAccuracy(testData, isTestSet, engine, (img, res, classifier, trueDigit, scores) -> {
+            // emulate old logic
+            int rivalDigit = -1;
+            double rivalScore = Double.NEGATIVE_INFINITY;
+            for (int d = 0; d < 10; d++) {
+                if (d == trueDigit)
+                    continue;
+                if (scores[d] > rivalScore) {
+                    rivalScore = scores[d];
+                    rivalDigit = d;
+                }
+            }
+            double margin = scores[trueDigit] - rivalScore;
+            boolean wasCorrect = (res != null) ? (res.getPredictedDigit() == trueDigit) : false; // Approx
+
+            double payoffScale = 1.0;
+            if (payoffFn != null && res != null) {
+                payoffScale = payoffFn.computePayoff(res, trueDigit);
+            }
+
+            classifier.applyFeedbackToNodes(img, trueDigit, rivalDigit, payoffScale, wasCorrect, margin);
+        });
+    }
+
+    public double evaluateAccuracy(List<DigitImage> testData, boolean isTestSet,
+            com.markovai.server.ai.inference.InferenceEngine engine) {
+        return evaluateAccuracy(testData, isTestSet, engine, (PayoffFunction) null); // Use adapter above
     }
 
     public void setPatch4x4Config(com.markovai.server.ai.Patch4x4FeedbackConfig config) {

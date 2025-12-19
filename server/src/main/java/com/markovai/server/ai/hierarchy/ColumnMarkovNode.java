@@ -219,19 +219,37 @@ public class ColumnMarkovNode implements DigitFactorNode {
             double effEta = feedbackConfig.eta * baseScale * scaleFreq;
 
             // Symmetric update
-            adj[trueDigit][tid] += effEta;
-            adj[rivalDigit][tid] -= effEta;
+            if (trueDigit >= 0 && trueDigit < NUM_DIGITS) {
+                adj[trueDigit][tid] += effEta;
+            }
+            if (rivalDigit >= 0 && rivalDigit < NUM_DIGITS) {
+                adj[rivalDigit][tid] -= effEta;
+            }
 
             // Clamp absolute value
-            if (adj[trueDigit][tid] > feedbackConfig.maxAdjAbs)
-                adj[trueDigit][tid] = feedbackConfig.maxAdjAbs;
-            if (adj[trueDigit][tid] < -feedbackConfig.maxAdjAbs)
-                adj[trueDigit][tid] = -feedbackConfig.maxAdjAbs;
 
-            if (adj[rivalDigit][tid] > feedbackConfig.maxAdjAbs)
-                adj[rivalDigit][tid] = feedbackConfig.maxAdjAbs;
-            if (adj[rivalDigit][tid] < -feedbackConfig.maxAdjAbs)
-                adj[rivalDigit][tid] = -feedbackConfig.maxAdjAbs;
+            // Clamp absolute value
+            if (trueDigit >= 0 && trueDigit < NUM_DIGITS) {
+                // Column logic was seemingly incomplete in view (lines 230-231 missing
+                // trueDigit clamp?)
+                // Wait, checking view again.. line 230 was empty, 231 started with rival.
+                // Ah, seeing the file content provided:
+                // 231: if (adj[rivalDigit][tid] > feedbackConfig.maxAdjAbs)
+                // It seems I might have deleted trueDigit clamp in previous edits or the view
+                // was weird.
+                // I will reinforce BOTH here just in case.
+                if (adj[trueDigit][tid] > feedbackConfig.maxAdjAbs)
+                    adj[trueDigit][tid] = feedbackConfig.maxAdjAbs;
+                if (adj[trueDigit][tid] < -feedbackConfig.maxAdjAbs)
+                    adj[trueDigit][tid] = -feedbackConfig.maxAdjAbs;
+            }
+
+            if (rivalDigit >= 0 && rivalDigit < NUM_DIGITS) {
+                if (adj[rivalDigit][tid] > feedbackConfig.maxAdjAbs)
+                    adj[rivalDigit][tid] = feedbackConfig.maxAdjAbs;
+                if (adj[rivalDigit][tid] < -feedbackConfig.maxAdjAbs)
+                    adj[rivalDigit][tid] = -feedbackConfig.maxAdjAbs;
+            }
 
             // Decay logic
             if (feedbackConfig.applyDecayEveryNUpdates > 0 &&
