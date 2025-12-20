@@ -105,7 +105,21 @@ public class FactorGraphBuilder {
         public Double penalizeCap;
     }
 
+    public static class ObserverWeightsConfig {
+        public Boolean enabled;
+        public Double alpha;
+        public Double temperature;
+        public String scaleK; // "NUM_OBSERVERS" or a double string
+        public Boolean usePayoffScale;
+        public Boolean updateOnlyIfIncorrect;
+        public Boolean requireConvergence;
+        public String advantageMode; // "signed_margin" or "scaled_margin"
+        public Double marginClip;
+        public Integer logEveryN;
+    }
+
     public static class LearningConfig {
+        public ObserverWeightsConfig observerWeights;
         public PayoffConfig payoff;
         public BasinConfig basin;
     }

@@ -12,6 +12,18 @@
         "debugStats": false
     },
     "learning": {
+        "observerWeights": {
+            "enabled": false,
+            "alpha": 0.01,
+            "temperature": 1.0,
+            "scaleK": "NUM_OBSERVERS",
+            "usePayoffScale": true,
+            "updateOnlyIfIncorrect": true,
+            "requireConvergence": true,
+            "advantageMode": "signed_margin",
+            "marginClip": 1.0,
+            "logEveryN": 1000
+        },
         "payoff": {
             "enabled": true,
             "scheme": "attractor_confidence",
@@ -32,11 +44,11 @@
             "useTrajectory": true,
             "trajectoryMinStep": 2,
             "winnerReinforce": 1.0,
-            "rivalPenalize": 0.5,
+            "rivalPenalize": 0.0,
             "deltaWeightMode": "belief_delta",
             "minDeltaGate": 1e-5,
             "normalizeTrajectory": true,
-            "penalizeCap": 0.05
+            "penalizeCap": 0.0
         }
     },
     "nodes": [

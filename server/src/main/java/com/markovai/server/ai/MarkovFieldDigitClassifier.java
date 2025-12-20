@@ -20,6 +20,17 @@ public class MarkovFieldDigitClassifier {
         this.root = root;
     }
 
+    public java.util.Set<String> getObserverNodeIds() {
+        java.util.Set<String> ids = new java.util.HashSet<>();
+        if (root instanceof com.markovai.server.ai.hierarchy.WeightedSumNode) {
+            for (com.markovai.server.ai.hierarchy.DigitFactorNode child : ((com.markovai.server.ai.hierarchy.WeightedSumNode) root)
+                    .getChildren()) {
+                ids.add(child.getId());
+            }
+        }
+        return ids;
+    }
+
     public ClassificationResult classifyWithDetails(DigitImage img) {
         // Compute bottom-up results
         Map<String, NodeResult> results = new HashMap<>();
@@ -35,7 +46,22 @@ public class MarkovFieldDigitClassifier {
                 bestDigit = d;
             }
         }
-        return new ClassificationResult(bestDigit, totalLogL, null);
+
+        // Extract leaf scores
+        Map<String, double[]> leafScores = new HashMap<>();
+        // We want scores for all nodes, or just leaves?
+        // Prompt says "for each leaf observer node".
+        // In our graph, row, col, patch4x4 are children of root.
+        // We can return all of them.
+        // Only add observer nodes (children of root) to leafScores
+        java.util.Set<String> obsIds = getObserverNodeIds();
+        for (java.util.Map.Entry<String, com.markovai.server.ai.hierarchy.NodeResult> entry : results.entrySet()) {
+            if (obsIds.contains(entry.getKey())) {
+                leafScores.put(entry.getKey(), entry.getValue().logLikelihoodsPerDigit);
+            }
+        }
+
+        return new ClassificationResult(bestDigit, totalLogL, null, leafScores);
     }
 
     public int classify(DigitImage img) {
@@ -68,6 +94,18 @@ public class MarkovFieldDigitClassifier {
         NodeResult res = node.computeForImage(img, childResults);
         memo.put(node.getId(), res);
         return res;
+    }
+
+    public void setObserverWeights(Map<String, Double> weights) {
+        if (root instanceof WeightedSumNode) {
+            ((WeightedSumNode) root).setWeightOverride(weights);
+        } else {
+            // If root isn't weighted sum (e.g. single node), we can't easily re-weight
+            // children without a combinator.
+            // But layered/network usually has WeightedSumNode root.
+            // If not, we log warning or ignore.
+            logger.warn("Root is not WeightedSumNode, cannot apply observer weight overrides.");
+        }
     }
 
     public double evaluateAccuracy(List<DigitImage> testData, boolean isTestSet) {

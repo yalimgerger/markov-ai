@@ -149,6 +149,7 @@ public class NetworkInferenceEngine implements InferenceEngine {
                 finalEntropy,
                 finalMaxDelta,
                 oscillationDetected,
-                trajectory);
+                trajectory,
+                base.getLeafScores());
     }
 }

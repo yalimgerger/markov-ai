@@ -14,6 +14,7 @@ public class WeightedSumNode implements DigitFactorNode {
     private final String id;
     private final List<DigitFactorNode> children = new ArrayList<>();
     private final Map<String, Double> weights;
+    private Map<String, Double> weightOverride = null;
 
     public WeightedSumNode(String id, List<DigitFactorNode> children, Map<String, Double> weights) {
         this.id = id;
@@ -23,11 +24,18 @@ public class WeightedSumNode implements DigitFactorNode {
         this.weights = weights;
     }
 
+    public void setWeightOverride(Map<String, Double> override) {
+        this.weightOverride = override;
+    }
+
     public void addChild(DigitFactorNode child) {
         this.children.add(child);
     }
 
     public double getWeight(String childId) {
+        if (weightOverride != null && weightOverride.containsKey(childId)) {
+            return weightOverride.get(childId);
+        }
         return weights.getOrDefault(childId, 0.0);
     }
 
@@ -47,7 +55,7 @@ public class WeightedSumNode implements DigitFactorNode {
 
         for (DigitFactorNode child : children) {
             NodeResult cr = childResults.get(child.getId());
-            double w = weights.getOrDefault(child.getId(), 0.0);
+            double w = getWeight(child.getId());
 
             if (cr == null) {
                 if (w == 0.0) {

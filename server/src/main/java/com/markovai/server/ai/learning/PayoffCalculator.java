@@ -96,4 +96,30 @@ public class PayoffCalculator {
 
         return scale;
     }
+
+    public static int findRival(double[] belief, int trueDigit) {
+        int best = -1;
+        double bestVal = -1.0;
+        int second = -1;
+        double secondVal = -1.0;
+
+        for (int i = 0; i < belief.length; i++) {
+            double v = belief[i];
+            if (v > bestVal) {
+                secondVal = bestVal;
+                second = best;
+                bestVal = v;
+                best = i;
+            } else if (v > secondVal) {
+                secondVal = v;
+                second = i;
+            }
+        }
+
+        if (best == trueDigit) {
+            return second;
+        } else {
+            return best;
+        }
+    }
 }

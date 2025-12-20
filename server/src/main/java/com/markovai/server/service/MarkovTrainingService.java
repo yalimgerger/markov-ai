@@ -700,6 +700,20 @@ public class MarkovTrainingService {
                     : null;
             final FactorGraphBuilder.BasinConfig bCfg = (configRoot.learning != null) ? configRoot.learning.basin
                     : null;
+            final FactorGraphBuilder.ObserverWeightsConfig obsCfg = (configRoot.learning != null)
+                    ? configRoot.learning.observerWeights
+                    : null;
+
+            final com.markovai.server.ai.learning.ObserverWeightState weightState = (obsCfg != null
+                    && Boolean.TRUE.equals(obsCfg.enabled))
+                            ? new com.markovai.server.ai.learning.ObserverWeightState(obsCfg)
+                            : null;
+
+            if (weightState != null) {
+                logger.info("Observer Weight Learning ENABLED. Alpha={}", obsCfg.alpha);
+                // We'll log the specific observers being tracked after we see the first
+                // classifier instance
+            }
 
             if (basinEnabled && bCfg != null && payoffEnabled) {
                 logger.info("Using BASIN-AWARE Learning: scheme={}, trajectory={}, gate={}", bCfg.scheme,
@@ -834,26 +848,35 @@ public class MarkovTrainingService {
                             targetR = winner; // The wrong attractor is the rival to penalize
                         }
 
+                        double cap = (bCfg.penalizeCap != null) ? bCfg.penalizeCap : 0.0;
                         double wMult = (bCfg.winnerReinforce != null) ? bCfg.winnerReinforce : 1.0;
-                        double rMult = (bCfg.rivalPenalize != null) ? bCfg.rivalPenalize : 1.0;
+                        double rMult = (bCfg.rivalPenalize != null) ? bCfg.rivalPenalize : 0.0;
+
+                        // Enforce Reinforcement-Only if explicitly configured (cap<=0 or rMult<=0)
+                        boolean reinforcementOnly = (cap <= 0.0 || rMult <= 0.0);
 
                         if (normalize) {
-                            // Raw weights
-                            double wPenalizeRaw = sumPosDr / denom;
-                            // Cap penalization
-                            double cap = (bCfg.penalizeCap != null) ? bCfg.penalizeCap : 0.10;
-                            wPenalize = Math.min(wPenalizeRaw, cap);
+                            if (reinforcementOnly) {
+                                wPenalize = 0.0;
+                                wReinforce = 1.0;
+                                reinforceScale = payoffScale * wMult; // Full payoff to winner
+                                penalizeScale = 0.0;
+                            } else {
+                                // Raw weights
+                                double wPenalizeRaw = sumPosDr / denom;
+                                // Cap penalization
+                                wPenalize = Math.min(wPenalizeRaw, cap);
 
-                            // Renormalize reinforce to take the rest
-                            wReinforce = 1.0 - wPenalize;
+                                // Renormalize reinforce to take the rest
+                                wReinforce = 1.0 - wPenalize;
 
-                            reinforceScale = payoffScale * wMult * wReinforce;
-                            penalizeScale = payoffScale * rMult * wPenalize;
+                                reinforceScale = payoffScale * wMult * wReinforce;
+                                penalizeScale = payoffScale * rMult * wPenalize;
+                            }
                         } else {
-                            // Old logic (raw sums)
-                            // This branch essentially ignored if normalizeTrajectory=true (default)
+                            // Old logic (raw sums) - largely unused now
                             reinforceScale = payoffScale * wMult * sumPosDw;
-                            penalizeScale = payoffScale * rMult * sumPosDr;
+                            penalizeScale = reinforcementOnly ? 0.0 : (payoffScale * rMult * sumPosDr);
                         }
                     }
 
@@ -885,22 +908,121 @@ public class MarkovTrainingService {
                         }
                     }
 
-                });
+                    // Observer Weight Update (Basin Branch)
+                    if (weightState != null && res instanceof com.markovai.server.ai.inference.NetworkInferenceResult) {
+                        com.markovai.server.ai.inference.NetworkInferenceResult netRes = (com.markovai.server.ai.inference.NetworkInferenceResult) res;
+                        Map<String, double[]> leafScores = netRes.getLeafScores();
+
+                        if (leafScores != null) {
+                            java.util.Set<String> obsIds = classifier.getObserverNodeIds();
+
+                            // Convergence Gate
+                            boolean checkConv = Boolean.TRUE.equals(obsCfg.requireConvergence);
+                            boolean isConverged = (!checkConv) ||
+                                    (netRes.getFinalMaxDelta() <= (configRoot.network != null
+                                            ? configRoot.network.stopEpsilon
+                                            : 1e-4));
+
+                            // Gating
+                            boolean skipUpdate = (Boolean.TRUE.equals(obsCfg.updateOnlyIfIncorrect) && wasCorrect)
+                                    || !isConverged;
+
+                            if (!skipUpdate) {
+                                // Use heuristic: true vs rival
+                                int r = (winner == trueDigit) ? rival : winner;
+
+                                for (String nodeId : obsIds) {
+                                    double[] ls = leafScores.get(nodeId);
+                                    if (ls != null) {
+                                        double m = ls[trueDigit] - ls[r];
+                                        weightState.update(nodeId, m, payoffScale);
+                                    }
+                                }
+                            }
+                            classifier.setObserverWeights(weightState.computeWeights(obsIds));
+                        }
+                    }
+
+                }); // End of evaluateAccuracy lambda
+
                 basinMetrics.printSummary(logger);
+                if (weightState != null) {
+                    weightState.logSummary("Phase B (Basin) Final", true);
+                }
 
             } else if (payoffEnabled) {
-                FactorGraphBuilder.PayoffConfig pCfgLocal = pCfg; // Effectively final
-                logger.info("Using Payoff-Weighted Learning: scheme={}, confStrong={}, scaleStrong={}",
-                        pCfgLocal.scheme, pCfgLocal.confStrong, pCfgLocal.scaleStrong);
+                FactorGraphBuilder.PayoffConfig pCfgLocal = pCfg;
 
-                mrf.evaluateAccuracy(phaseBAdapt, false, engine,
-                        (res, label) -> PayoffCalculator.computePayoffScale(res, label, pCfgLocal));
+                mrf.evaluateAccuracy(phaseBAdapt, false, engine, (img, res, classifier, trueDigit, scores) -> {
+                    // Payoff Logic
+                    double payoffScale = (pCfgLocal != null && res != null)
+                            ? PayoffCalculator.computePayoffScale(res, trueDigit, pCfgLocal)
+                            : 1.0;
+
+                    // Standard Feedback
+                    int rivalDigit = -1;
+                    double rivalScore = Double.NEGATIVE_INFINITY;
+                    for (int d = 0; d < 10; d++) {
+                        if (d == trueDigit)
+                            continue;
+                        if (scores[d] > rivalScore) {
+                            rivalScore = scores[d];
+                            rivalDigit = d;
+                        }
+                    }
+                    double margin = scores[trueDigit] - rivalScore;
+                    boolean wasCorrect = (res != null) ? (res.getPredictedDigit() == trueDigit) : false;
+
+                    classifier.applyFeedbackToNodes(img, trueDigit, rivalDigit, payoffScale, wasCorrect, margin);
+
+                    // Observer Weight Update
+                    if (weightState != null && res instanceof com.markovai.server.ai.inference.NetworkInferenceResult) {
+                        com.markovai.server.ai.inference.NetworkInferenceResult netRes = (com.markovai.server.ai.inference.NetworkInferenceResult) res;
+                        java.util.Map<String, double[]> leafScores = netRes.getLeafScores();
+
+                        if (leafScores != null) {
+                            java.util.Set<String> obsIds = classifier.getObserverNodeIds();
+
+                            // Convergence Gate
+                            boolean checkConv = Boolean.TRUE.equals(obsCfg.requireConvergence);
+                            boolean isConverged = (!checkConv) ||
+                                    (netRes.getFinalMaxDelta() <= (configRoot.network != null
+                                            ? configRoot.network.stopEpsilon
+                                            : 1e-4));
+
+                            // Gating
+                            boolean skipUpdate = (Boolean.TRUE.equals(obsCfg.updateOnlyIfIncorrect) && wasCorrect)
+                                    || !isConverged;
+
+                            if (!skipUpdate) {
+                                int r = (wasCorrect) ? PayoffCalculator.findRival(netRes.getBelief(), trueDigit)
+                                        : netRes.getPredictedDigit();
+
+                                for (String nodeId : obsIds) {
+                                    double[] ls = leafScores.get(nodeId);
+                                    if (ls != null) {
+                                        double m = ls[trueDigit] - ls[r];
+                                        weightState.update(nodeId, m, payoffScale);
+                                    }
+                                }
+                            }
+                            classifier.setObserverWeights(weightState.computeWeights(obsIds));
+                        }
+                    }
+                });
+
+                if (weightState != null) {
+                    weightState.logSummary("Phase B (Payoff) Final", true);
+                }
+
             } else {
                 mrf.evaluateAccuracy(phaseBAdapt, false, engine);
             }
         } else {
+            // Not network topology
             mrf.evaluateAccuracy(phaseBAdapt, false, engine);
         }
+
         if (verbose)
             logger.info("Adaptation complete.");
 
@@ -909,17 +1031,20 @@ public class MarkovTrainingService {
             logger.info("PHASE C: Final Test Accuracy (Feedback Scoring Enabled, Learning Frozen)");
 
         // Freeze Row Feedback
-        com.markovai.server.ai.Patch4x4FeedbackConfig rowFrozen = rowAdapt.copy();
+        com.markovai.server.ai.Patch4x4FeedbackConfig rowFrozen = rowAdapt
+                .copy();
         rowFrozen.learningEnabled = false;
         mrf.setRowFeedbackConfig(rowFrozen);
 
         // Freeze Col Feedback
-        com.markovai.server.ai.Patch4x4FeedbackConfig colFrozen = colAdapt.copy();
+        com.markovai.server.ai.Patch4x4FeedbackConfig colFrozen = colAdapt
+                .copy();
         colFrozen.learningEnabled = false;
         mrf.setColumnFeedbackConfig(colFrozen);
 
         // Freeze Patch Feedback
-        com.markovai.server.ai.Patch4x4FeedbackConfig patchFrozen = patchAdapt.copy();
+        com.markovai.server.ai.Patch4x4FeedbackConfig patchFrozen = patchAdapt
+                .copy();
         patchFrozen.learningEnabled = false;
         mrf.setPatch4x4Config(patchFrozen);
 

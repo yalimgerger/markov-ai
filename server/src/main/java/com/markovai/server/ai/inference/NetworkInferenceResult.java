@@ -8,6 +8,7 @@ public class NetworkInferenceResult extends InferenceResult {
     private final double finalMaxDelta;
     private final boolean oscillationDetected;
     private final List<double[]> beliefTrajectory;
+    private final java.util.Map<String, double[]> leafScores;
 
     public NetworkInferenceResult(
             int predictedDigit,
@@ -19,13 +20,32 @@ public class NetworkInferenceResult extends InferenceResult {
             double finalEntropy,
             double finalMaxDelta,
             boolean oscillationDetected,
-            List<double[]> beliefTrajectory) {
+            List<double[]> beliefTrajectory,
+            java.util.Map<String, double[]> leafScores) {
         super(predictedDigit, scores, belief, iterations, topologyUsed);
         this.initialEntropy = initialEntropy;
         this.finalEntropy = finalEntropy;
         this.finalMaxDelta = finalMaxDelta;
         this.oscillationDetected = oscillationDetected;
         this.beliefTrajectory = beliefTrajectory;
+        this.leafScores = leafScores;
+    }
+
+    // Update existing constructor to delegate with null leafScores for backward
+    // compatibility
+    public NetworkInferenceResult(
+            int predictedDigit,
+            double[] scores,
+            double[] belief,
+            int iterations,
+            String topologyUsed,
+            double initialEntropy,
+            double finalEntropy,
+            double finalMaxDelta,
+            boolean oscillationDetected,
+            List<double[]> beliefTrajectory) {
+        this(predictedDigit, scores, belief, iterations, topologyUsed, initialEntropy, finalEntropy, finalMaxDelta,
+                oscillationDetected, beliefTrajectory, null);
     }
 
     public NetworkInferenceResult(
@@ -60,5 +80,9 @@ public class NetworkInferenceResult extends InferenceResult {
 
     public List<double[]> getBeliefTrajectory() {
         return beliefTrajectory;
+    }
+
+    public java.util.Map<String, double[]> getLeafScores() {
+        return leafScores;
     }
 }
