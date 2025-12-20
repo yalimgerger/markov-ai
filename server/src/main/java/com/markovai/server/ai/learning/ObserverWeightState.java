@@ -27,6 +27,7 @@ public class ObserverWeightState {
     private final double temperature;
     private final boolean usePayoffScale;
     private final double marginClip;
+    private final double l2;
 
     private int totalUpdates = 0;
 
@@ -36,6 +37,7 @@ public class ObserverWeightState {
         this.temperature = config.temperature != null ? config.temperature : 1.0;
         this.usePayoffScale = config.usePayoffScale != null ? config.usePayoffScale : true;
         this.marginClip = config.marginClip != null ? config.marginClip : 1.0;
+        this.l2 = config.l2 != null ? config.l2 : 0.0;
     }
 
     public void reset() {
@@ -52,7 +54,10 @@ public class ObserverWeightState {
         double scale = usePayoffScale ? payoffScale : 1.0;
         double delta = alpha * scale * advantage;
 
-        thetas.merge(nodeId, delta, Double::sum);
+        thetas.compute(nodeId, (k, v) -> {
+            double old = (v == null) ? 0.0 : v;
+            return (old + delta) * (1.0 - l2);
+        });
         totalUpdates++;
     }
 
@@ -66,6 +71,40 @@ public class ObserverWeightState {
             // Default "signed_margin"
             return Math.signum(clipped);
         }
+    }
+
+    /**
+     * Updates Theta using Cross-Entropy Gradient Ascent.
+     * Advantage = s_i[true] - E_p[s_i]
+     * Theta += alpha * scale * Advantage
+     *
+     * @param nodeId         Node ID
+     * @param centeredScores s_i centered by image mean
+     * @param trueDigit      The ground truth label
+     * @param probs          Ensemble probabilities p[d]
+     * @param payoffScale    Additional scale factor (e.g. from payoff)
+     */
+    public void updateCrossEntropy(String nodeId, double[] centeredScores, int trueDigit, double[] probs,
+            double payoffScale) {
+        // 1. Calculate Expected Value of observer score under ensemble distribution
+        double expected = 0.0;
+        for (int d = 0; d < 10; d++) {
+            expected += probs[d] * centeredScores[d];
+        }
+
+        // 2. Advantage: Score of True Digit - Expected Score
+        double advantage = centeredScores[trueDigit] - expected;
+
+        // 3. Update
+        double scale = usePayoffScale ? payoffScale : 1.0;
+        // Note: For CE, gradients can be large. alpha is usually smaller.
+        double delta = alpha * scale * advantage;
+
+        thetas.compute(nodeId, (k, v) -> {
+            double old = (v == null) ? 0.0 : v;
+            return (old + delta) * (1.0 - l2);
+        });
+        totalUpdates++;
     }
 
     /**

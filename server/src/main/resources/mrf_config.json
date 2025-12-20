@@ -14,7 +14,13 @@
     "learning": {
         "observerWeights": {
             "enabled": false,
-            "alpha": 0.01,
+            "updateRule": "cross_entropy",
+            "scoreSoftmaxTemperature": 1.0,
+            "centerObserverScores": false,
+            "centerMode": "deprecated",
+            "standardizeObserverScores": false,
+            "l2": 0.001,
+            "alpha": 0.005,
             "temperature": 1.0,
             "scaleK": "NUM_OBSERVERS",
             "usePayoffScale": true,

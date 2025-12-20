@@ -711,6 +711,15 @@ public class MarkovTrainingService {
 
             if (weightState != null) {
                 logger.info("Observer Weight Learning ENABLED. Alpha={}", obsCfg.alpha);
+            }
+            logger.info(
+                    "ObserverWeights enabled={}, standardizeObserverScores={}, WeightedSumNode.standardizeObserverScores={}",
+                    (obsCfg != null ? obsCfg.enabled : "null"),
+                    (obsCfg != null ? obsCfg.standardizeObserverScores : "null"),
+                    mrf.getRootStandardizationStatus());
+
+            if (weightState != null) {
+                logger.info("Active Observer IDs for Weight Learning: {}", mrf.getObserverNodeIds());
                 // We'll log the specific observers being tracked after we see the first
                 // classifier instance
             }
@@ -995,19 +1004,91 @@ public class MarkovTrainingService {
                                     || !isConverged;
 
                             if (!skipUpdate) {
-                                int r = (wasCorrect) ? PayoffCalculator.findRival(netRes.getBelief(), trueDigit)
-                                        : netRes.getPredictedDigit();
+                                String rule = (obsCfg.updateRule != null) ? obsCfg.updateRule : "heuristic";
 
-                                for (String nodeId : obsIds) {
-                                    double[] ls = leafScores.get(nodeId);
-                                    if (ls != null) {
-                                        double m = ls[trueDigit] - ls[r];
-                                        weightState.update(nodeId, m, payoffScale);
+                                if ("cross_entropy".equalsIgnoreCase(rule)) {
+                                    // 1. Compute Ensemble Distribution p[d]
+                                    double temp = (obsCfg.scoreSoftmaxTemperature != null)
+                                            ? obsCfg.scoreSoftmaxTemperature
+                                            : 1.0;
+                                    double[] finalLogScores = netRes.getScores(); // Usually log-likelihoods
+                                    double[] probs = new double[10];
+                                    double maxS = Double.NEGATIVE_INFINITY;
+                                    for (double s : finalLogScores)
+                                        if (s > maxS)
+                                            maxS = s;
+                                    double sumExp = 0.0;
+                                    for (int d = 0; d < 10; d++) {
+                                        probs[d] = Math.exp((finalLogScores[d] - maxS) / temp);
+                                        sumExp += probs[d];
+                                    }
+                                    for (int d = 0; d < 10; d++)
+                                        probs[d] /= sumExp;
+
+                                    // 2. Standardization / Centering
+                                    boolean doStandardize = Boolean.TRUE.equals(obsCfg.standardizeObserverScores);
+                                    boolean doCenter = Boolean.TRUE.equals(obsCfg.centerObserverScores);
+
+                                    for (java.util.Set<String> activeIds = obsIds; !activeIds.isEmpty();) {
+                                        for (String nodeId : activeIds) {
+                                            double[] nodeScores = leafScores.get(nodeId);
+                                            if (nodeScores == null)
+                                                continue;
+
+                                            double[] effectiveScores = nodeScores;
+
+                                            if (doStandardize) {
+                                                double mean = 0.0;
+                                                for (double v : nodeScores)
+                                                    mean += v;
+                                                mean /= 10.0;
+
+                                                double var = 0.0;
+                                                for (double v : nodeScores)
+                                                    var += (v - mean) * (v - mean);
+                                                double std = Math.sqrt(var / 10.0) + 1e-6;
+
+                                                double[] z = new double[10];
+                                                for (int d = 0; d < 10; d++) {
+                                                    z[d] = (nodeScores[d] - mean) / std;
+                                                }
+                                                effectiveScores = z;
+                                            } else if (doCenter && "per_image_mean".equals(obsCfg.centerMode)) {
+                                                double mean = 0.0;
+                                                for (double v : nodeScores)
+                                                    mean += v;
+                                                mean /= 10.0;
+                                                double[] centered = new double[10];
+                                                for (int d = 0; d < 10; d++)
+                                                    centered[d] = nodeScores[d] - mean;
+                                                effectiveScores = centered;
+                                            }
+
+                                            weightState.updateCrossEntropy(nodeId, effectiveScores, trueDigit, probs,
+                                                    payoffScale);
+                                        }
+                                        break; // effectively just iterator
+                                    }
+                                } else {
+                                    // Legacy Heuristic
+                                    int r = (wasCorrect) ? PayoffCalculator.findRival(netRes.getBelief(), trueDigit)
+                                            : netRes.getPredictedDigit();
+
+                                    for (String nodeId : obsIds) {
+                                        double[] ls = leafScores.get(nodeId);
+                                        if (ls != null) {
+                                            double m = ls[trueDigit] - ls[r];
+                                            weightState.update(nodeId, m, payoffScale);
+                                        }
                                     }
                                 }
                             }
                             classifier.setObserverWeights(weightState.computeWeights(obsIds));
+                            classifier.setObserverWeights(weightState.computeWeights(obsIds));
                         }
+                    } else {
+                        // Ensure no weights are active if learning is disabled
+                        classifier.setObserverWeights(null);
                     }
                 });
 

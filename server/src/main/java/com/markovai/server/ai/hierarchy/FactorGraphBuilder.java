@@ -116,6 +116,16 @@ public class FactorGraphBuilder {
         public String advantageMode; // "signed_margin" or "scaled_margin"
         public Double marginClip;
         public Integer logEveryN;
+
+        // Cross-Entropy Fields
+        public String updateRule; // "heuristic" (default) or "cross_entropy"
+        public Double scoreSoftmaxTemperature;
+        public Boolean centerObserverScores;
+        public String centerMode;
+
+        // Standardization & Regularization
+        public Boolean standardizeObserverScores;
+        public Double l2;
     }
 
     public static class LearningConfig {
@@ -176,8 +186,16 @@ public class FactorGraphBuilder {
                         break;
                     case "WeightedSumNode":
                         // Children wired later
-                        node = new WeightedSumNode(cn.id, new ArrayList<>(),
+                        WeightedSumNode wsNode = new WeightedSumNode(cn.id, new ArrayList<>(),
                                 cn.weights != null ? cn.weights : new HashMap<>());
+                        // Check if standardization is enabled in global config
+                        if (config.learning != null && config.learning.observerWeights != null) {
+                            boolean owEnabled = Boolean.TRUE.equals(config.learning.observerWeights.enabled);
+                            boolean standardize = Boolean.TRUE
+                                    .equals(config.learning.observerWeights.standardizeObserverScores);
+                            wsNode.setStandardizeObserverScores(owEnabled && standardize);
+                        }
+                        node = wsNode;
                         break;
                     default:
                         logger.warn("Unknown node type: {}", cn.type);

@@ -31,6 +31,13 @@ public class MarkovFieldDigitClassifier {
         return ids;
     }
 
+    public boolean getRootStandardizationStatus() {
+        if (root instanceof WeightedSumNode) {
+            return ((WeightedSumNode) root).isStandardizeObserverScores();
+        }
+        return false;
+    }
+
     public ClassificationResult classifyWithDetails(DigitImage img) {
         // Compute bottom-up results
         Map<String, NodeResult> results = new HashMap<>();
@@ -49,10 +56,6 @@ public class MarkovFieldDigitClassifier {
 
         // Extract leaf scores
         Map<String, double[]> leafScores = new HashMap<>();
-        // We want scores for all nodes, or just leaves?
-        // Prompt says "for each leaf observer node".
-        // In our graph, row, col, patch4x4 are children of root.
-        // We can return all of them.
         // Only add observer nodes (children of root) to leafScores
         java.util.Set<String> obsIds = getObserverNodeIds();
         for (java.util.Map.Entry<String, com.markovai.server.ai.hierarchy.NodeResult> entry : results.entrySet()) {

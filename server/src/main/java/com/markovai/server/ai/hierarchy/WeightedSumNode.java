@@ -15,6 +15,7 @@ public class WeightedSumNode implements DigitFactorNode {
     private final List<DigitFactorNode> children = new ArrayList<>();
     private final Map<String, Double> weights;
     private Map<String, Double> weightOverride = null;
+    private boolean standardizeObserverScores = false;
 
     public WeightedSumNode(String id, List<DigitFactorNode> children, Map<String, Double> weights) {
         this.id = id;
@@ -22,6 +23,15 @@ public class WeightedSumNode implements DigitFactorNode {
             this.children.addAll(children);
         }
         this.weights = weights;
+    }
+
+    public void setStandardizeObserverScores(boolean s) {
+        this.standardizeObserverScores = s;
+        logger.info("WeightedSumNode: standardizeObserverScores={}", s);
+    }
+
+    public boolean isStandardizeObserverScores() {
+        return standardizeObserverScores;
     }
 
     public void setWeightOverride(Map<String, Double> override) {
@@ -59,15 +69,34 @@ public class WeightedSumNode implements DigitFactorNode {
 
             if (cr == null) {
                 if (w == 0.0) {
-                    // Optimization: Skipped calculation because weight is 0
                     continue;
                 }
                 logger.warn("Missing result for child {}", child.getId());
                 continue;
             }
 
+            double[] scores = cr.logLikelihoodsPerDigit;
+            if (standardizeObserverScores) {
+                double mean = 0.0;
+                for (double v : scores)
+                    mean += v;
+                mean /= 10.0;
+
+                double var = 0.0;
+                for (double v : scores)
+                    var += (v - mean) * (v - mean);
+                double std = Math.sqrt(var / 10.0) + 1e-6; // Add eps
+
+                // Use standardized scores for fusion
+                double[] z = new double[10];
+                for (int d = 0; d < 10; d++) {
+                    z[d] = (scores[d] - mean) / std;
+                }
+                scores = z;
+            }
+
             for (int d = 0; d < 10; d++) {
-                totalLogL[d] += w * cr.logLikelihoodsPerDigit[d];
+                totalLogL[d] += w * scores[d];
             }
         }
 
