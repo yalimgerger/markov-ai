@@ -105,7 +105,7 @@ public class DigitDatasetPrecompute {
                     digitClassifier.getRowExtractor(),
                     digitClassifier.getColumnExtractor(),
                     digitClassifier.getPatchExtractor(),
-                    patch4x4Model, DataPathResolver.resolveDbPath());
+                    patch4x4Model, null, DataPathResolver.resolveDbPath());
 
             Map<String, DigitFactorNode> nodes = builder.build(
                     DigitDatasetPrecompute.class.getResourceAsStream("/mrf_config.json"));

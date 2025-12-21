@@ -125,17 +125,28 @@
             }
         },
         {
+            "id": "grad",
+            "type": "gradient_orientation_unigram",
+            "blockSize": 4,
+            "numBins": 8,
+            "flatBin": 8,
+            "magThreshold": 50.0,
+            "smoothingAlpha": 1.0
+        },
+        {
             "id": "root",
             "type": "WeightedSumNode",
             "children": [
                 "row",
                 "col",
-                "patch4x4"
+                "patch4x4",
+                "grad"
             ],
             "weights": {
                 "row": 1.0,
                 "col": 1.0,
-                "patch4x4": 0.25
+                "patch4x4": 0.25,
+                "grad": 0.0
             }
         }
     ],

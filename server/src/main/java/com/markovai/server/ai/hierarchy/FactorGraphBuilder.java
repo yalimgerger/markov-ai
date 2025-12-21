@@ -30,13 +30,15 @@ public class FactorGraphBuilder {
     private final MultiSequenceExtractor colExtractor;
     private final SequenceExtractor patchExtractor;
     private final DigitPatch4x4UnigramModel patch4x4Model;
+    private final DigitGradientUnigramModel gradModel;
 
     private final DigitImageDao imageDao;
     private final MarkovChainResultDao resultDao;
 
     public FactorGraphBuilder(DigitMarkovModel rowModel, DigitMarkovModel colModel, DigitMarkovModel patchModel,
             MultiSequenceExtractor rowExtractor, MultiSequenceExtractor colExtractor,
-            SequenceExtractor patchExtractor, DigitPatch4x4UnigramModel patch4x4Model, String dbPath) {
+            SequenceExtractor patchExtractor, DigitPatch4x4UnigramModel patch4x4Model,
+            DigitGradientUnigramModel gradModel, String dbPath) {
         this.rowModel = rowModel;
         this.colModel = colModel;
         this.patchModel = patchModel;
@@ -44,6 +46,7 @@ public class FactorGraphBuilder {
         this.colExtractor = colExtractor;
         this.patchExtractor = patchExtractor;
         this.patch4x4Model = patch4x4Model;
+        this.gradModel = gradModel;
 
         // Initialize DB
         try {
@@ -64,6 +67,13 @@ public class FactorGraphBuilder {
         public Map<String, Double> weights;
         public Double smoothingLambda;
         public Patch4x4FeedbackConfig feedback;
+
+        // Gradient Node Config
+        public Integer blockSize;
+        public Integer numBins;
+        public Integer flatBin;
+        public Double magThreshold;
+        public Double smoothingAlpha;
     }
 
     public static class NetworkConfig {
@@ -183,6 +193,15 @@ public class FactorGraphBuilder {
                                 : Patch4x4FeedbackConfig.disabled();
                         // Note: Bypassing CachedMarkovChainEvaluator for online learning node
                         node = new Patch4x4Node(cn.id, patch4x4Model, lambda, feedback);
+                        // Note: Bypassing CachedMarkovChainEvaluator for online learning node
+                        node = new Patch4x4Node(cn.id, patch4x4Model, lambda, feedback);
+                        break;
+                    case "gradient_orientation_unigram":
+                        if (gradModel == null) {
+                            logger.warn("Gradient Model not injected, cannot create GradientOrientationNode");
+                            break;
+                        }
+                        node = new GradientOrientationNode(cn.id, gradModel);
                         break;
                     case "WeightedSumNode":
                         // Children wired later

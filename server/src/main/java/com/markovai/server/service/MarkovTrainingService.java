@@ -38,6 +38,7 @@ public class MarkovTrainingService {
 
     private final RowColumnDigitClassifier model = new RowColumnDigitClassifier();
     private final com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model = new com.markovai.server.ai.DigitPatch4x4UnigramModel();
+    private com.markovai.server.ai.DigitGradientUnigramModel gradModel;
     private boolean isReady = false;
 
     public RowColumnDigitClassifier getModel() {
@@ -81,7 +82,48 @@ public class MarkovTrainingService {
                     patch4x4Model.trainOnImage(img.label, binary);
                 }
                 patch4x4Model.finalizeProbabilities();
+                patch4x4Model.finalizeProbabilities();
                 logger.info("4x4 Patch Model Trained.");
+
+                // Train Gradient Model
+                try {
+                    ObjectMapper mapper = new ObjectMapper();
+                    FactorGraphBuilder.ConfigRoot config = mapper.readValue(
+                            getClass().getResourceAsStream("/mrf_config.json"),
+                            FactorGraphBuilder.ConfigRoot.class);
+
+                    FactorGraphBuilder.ConfigNode gradNode = null;
+                    if (config.nodes != null) {
+                        for (FactorGraphBuilder.ConfigNode n : config.nodes) {
+                            if ("gradient_orientation_unigram".equals(n.type)) {
+                                gradNode = n;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (gradNode != null) {
+                        int bs = gradNode.blockSize != null ? gradNode.blockSize : 4;
+                        int nb = gradNode.numBins != null ? gradNode.numBins : 8;
+                        int fb = gradNode.flatBin != null ? gradNode.flatBin : 8;
+                        double mt = gradNode.magThreshold != null ? gradNode.magThreshold : 50.0;
+                        double sa = gradNode.smoothingAlpha != null ? gradNode.smoothingAlpha : 1.0;
+
+                        gradModel = new com.markovai.server.ai.DigitGradientUnigramModel(bs, nb, fb, mt, sa);
+                        gradModel.train(trainingData);
+                    } else {
+                        // Default fallback if not in config yet (so we can pass non-null if needed)
+                        // But if not in config, we might pass null. FactorGraphBuilder handles null
+                        // gracefully?
+                        // FGB logs warning if type is requested but model is null.
+                        // We'll create a default one anyway just in case config adds it later without
+                        // code change?
+                        // No, better to stick to config. If missing, gradModel remains null.
+                        logger.info("No gradient_orientation_unigram node found in config, skipping training.");
+                    }
+                } catch (Exception e) {
+                    logger.error("Failed to init gradient model", e);
+                }
 
                 if (!testingData.isEmpty()) {
                     boolean runVerification = "true".equalsIgnoreCase(System.getProperty("verifyFeedbackNoLeakage"))
@@ -111,16 +153,16 @@ public class MarkovTrainingService {
                                             appArgs.getOptionValues("networkAttractorSanity").get(0)));
 
                     if (runNetworkSanity) {
-                        runNetworkAttractorSanityCheck(model, testingData, patch4x4Model);
+                        runNetworkAttractorSanityCheck(model, testingData, patch4x4Model, gradModel);
                     } else if ("true".equalsIgnoreCase(System.getProperty("networkConvergenceSweep"))
                             || (appArgs != null && appArgs.containsOption("networkConvergenceSweep")
                                     && "true".equalsIgnoreCase(
                                             appArgs.getOptionValues("networkConvergenceSweep").get(0)))) {
-                        runNetworkConvergenceSweep(model, testingData, patch4x4Model);
+                        runNetworkConvergenceSweep(model, testingData, patch4x4Model, gradModel);
                     } else if (runAdaptSweep) {
-                        runAdaptationSizeSweep(model, trainingData, testingData, patch4x4Model);
+                        runAdaptationSizeSweep(model, trainingData, testingData, patch4x4Model, gradModel);
                     } else if (runSweep) {
-                        runFeedbackSweep(model, trainingData, testingData, patch4x4Model);
+                        runFeedbackSweep(model, trainingData, testingData, patch4x4Model, gradModel);
                     } else if (runMultiSeed) {
                         boolean useRowFeedback = false;
                         boolean useColFeedback = false;
@@ -167,7 +209,7 @@ public class MarkovTrainingService {
                                             .equalsIgnoreCase(appArgs.getOptionValues("colFeedback").get(0)));
                         }
 
-                        runLeakageFreeMultiSeedVerification(model, testingData, trainingData, patch4x4Model,
+                        runLeakageFreeMultiSeedVerification(model, testingData, trainingData, patch4x4Model, gradModel,
                                 useRowFeedback, useColFeedback);
                     } else if (runVerification) {
                         boolean useRowFeedback = false;
@@ -211,7 +253,8 @@ public class MarkovTrainingService {
                                             .equalsIgnoreCase(appArgs.getOptionValues("colFeedback").get(0)));
                         }
 
-                        runLeakageFreeVerification(model, testingData, trainingData, patch4x4Model, useRowFeedback,
+                        runLeakageFreeVerification(model, testingData, trainingData, patch4x4Model, gradModel,
+                                useRowFeedback,
                                 useColFeedback);
                     } else {
                         // Legacy Evaluation
@@ -223,7 +266,7 @@ public class MarkovTrainingService {
                                 FactorGraphBuilder builder = new FactorGraphBuilder(
                                         model.getRowModel(), model.getColumnModel(), model.getPatchModel(),
                                         model.getRowExtractor(), model.getColumnExtractor(), model.getPatchExtractor(),
-                                        patch4x4Model, DataPathResolver.resolveDbPath());
+                                        patch4x4Model, gradModel, DataPathResolver.resolveDbPath());
 
                                 ObjectMapper mapper = new ObjectMapper();
                                 FactorGraphBuilder.ConfigRoot config = mapper.readValue(
@@ -462,6 +505,7 @@ public class MarkovTrainingService {
 
     private void runLeakageFreeMultiSeedVerification(RowColumnDigitClassifier model, List<DigitImage> testData,
             List<DigitImage> trainData, com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model,
+            com.markovai.server.ai.DigitGradientUnigramModel gradModel,
             boolean useRowFeedback, boolean useColFeedback) {
         logger.info("============================================================");
         logger.info("STARTING MULTI-SEED LEAKAGE-FREE VERIFICATION");
@@ -488,7 +532,8 @@ public class MarkovTrainingService {
             for (long seed : seeds) {
                 logger.info("Running protocol for seed={}, rowFeedback={}, colFeedback={}", seed, useRowFeedback,
                         useColFeedback);
-                LeakageFreeResult result = performLeakageFreeProtocol(model, testData, trainData, patch4x4Model, seed,
+                LeakageFreeResult result = performLeakageFreeProtocol(model, testData, trainData, patch4x4Model,
+                        gradModel, seed,
                         false, useRowFeedback, useColFeedback, 2000, null);
                 results.add(result);
                 logger.info("Seed={}  Baseline={}  Frozen={}  Delta={}",
@@ -561,13 +606,15 @@ public class MarkovTrainingService {
 
     private void runLeakageFreeVerification(RowColumnDigitClassifier model, List<DigitImage> testData,
             List<DigitImage> trainData, com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model,
+            com.markovai.server.ai.DigitGradientUnigramModel gradModel,
             boolean useRowFeedback, boolean useColFeedback) {
         logger.info("============================================================");
         logger.info("STARTING LEAKAGE-FREE VERIFICATION PROTOCOL (Single Seed)");
         logger.info("============================================================");
 
         try {
-            performLeakageFreeProtocol(model, testData, trainData, patch4x4Model, 12345L, true, useRowFeedback,
+            performLeakageFreeProtocol(model, testData, trainData, patch4x4Model, gradModel, 12345L, true,
+                    useRowFeedback,
                     useColFeedback, 2000, null);
 
             logger.info("============================================================");
@@ -587,6 +634,7 @@ public class MarkovTrainingService {
 
     private LeakageFreeResult performLeakageFreeProtocol(RowColumnDigitClassifier model, List<DigitImage> testData,
             List<DigitImage> trainData, com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model,
+            com.markovai.server.ai.DigitGradientUnigramModel gradModel,
             long seed, boolean verbose, boolean useRowFeedback, boolean useColFeedback, int adaptSize,
             Double knownBaseline)
             throws Exception {
@@ -595,7 +643,7 @@ public class MarkovTrainingService {
         FactorGraphBuilder builder = new FactorGraphBuilder(
                 model.getRowModel(), model.getColumnModel(), model.getPatchModel(),
                 model.getRowExtractor(), model.getColumnExtractor(), model.getPatchExtractor(),
-                patch4x4Model, DataPathResolver.resolveDbPath());
+                patch4x4Model, gradModel, DataPathResolver.resolveDbPath());
 
         ObjectMapper mapper = new ObjectMapper();
         FactorGraphBuilder.ConfigRoot configRoot = mapper.readValue(
@@ -1136,8 +1184,8 @@ public class MarkovTrainingService {
     }
 
     private void runAdaptationSizeSweep(RowColumnDigitClassifier model, List<DigitImage> trainData,
-            List<DigitImage> testData,
-            com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model) {
+            List<DigitImage> testData, com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model,
+            com.markovai.server.ai.DigitGradientUnigramModel gradModel) {
         logger.info("============================================================");
         logger.info("STARTING ADAPTATION SIZE SWEEP (LEAKAGE-FREE)");
         logger.info("============================================================");
@@ -1204,7 +1252,7 @@ public class MarkovTrainingService {
                 modes.add("PATCH_ROW_COL");
             }
 
-            double baselineAcc = evaluateSweepBaseline(model, testData, patch4x4Model);
+            double baselineAcc = evaluateSweepBaseline(model, testData, patch4x4Model, gradModel);
 
             System.out.println("\n=== LEAKAGE-FREE ADAPTATION SIZE SWEEP ===");
             System.out.printf("baselineAcc=%.4f%n", baselineAcc);
@@ -1244,6 +1292,7 @@ public class MarkovTrainingService {
                             .mapToObj(seed -> {
                                 try {
                                     return performLeakageFreeProtocol(model, testData, cleanTrainData, patch4x4Model,
+                                            gradModel,
                                             seed, false, useRow, useCol, adaptSize, baselineAcc);
                                 } catch (Exception e) {
                                     throw new RuntimeException(e);
@@ -1305,7 +1354,8 @@ public class MarkovTrainingService {
     }
 
     private void runFeedbackSweep(RowColumnDigitClassifier model, List<DigitImage> trainData, List<DigitImage> testData,
-            com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model) {
+            com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model,
+            com.markovai.server.ai.DigitGradientUnigramModel gradModel) {
         logger.info("============================================================");
         logger.info("STARTING FEEDBACK HYPERPARAMETER SWEEP");
         logger.info("============================================================");
@@ -1313,7 +1363,7 @@ public class MarkovTrainingService {
         try {
             // 1. Compute Baseline (Once)
             logger.info("Computing Baseline Accuracy...");
-            double baselineAcc = evaluateSweepBaseline(model, testData, patch4x4Model);
+            double baselineAcc = evaluateSweepBaseline(model, testData, patch4x4Model, gradModel);
             logger.info("Baseline Accuracy: {}", String.format("%.4f", baselineAcc));
 
             // Explicit Grid
@@ -1327,7 +1377,8 @@ public class MarkovTrainingService {
                     logger.info("Running sweep iteration: adjScale={}, eta={}", scale, eta);
                     // MRF is rebuilt every iteration, effectively resetting node state.
 
-                    double adaptedAcc = runSweepIteration(model, trainData, testData, patch4x4Model, scale, eta);
+                    double adaptedAcc = runSweepIteration(model, trainData, testData, patch4x4Model, gradModel, scale,
+                            eta);
 
                     results.add(new SweepResult(scale, eta, baselineAcc, adaptedAcc));
                 }
@@ -1395,21 +1446,23 @@ public class MarkovTrainingService {
     }
 
     private double evaluateSweepBaseline(RowColumnDigitClassifier model, List<DigitImage> testData,
-            com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model) throws Exception {
+            com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model,
+            com.markovai.server.ai.DigitGradientUnigramModel gradModel) throws Exception {
         FactorGraphBuilder.ConfigRoot config = loadMrfConfig();
-        MarkovFieldDigitClassifier mrf = buildMrf(model, patch4x4Model, config);
+        MarkovFieldDigitClassifier mrf = buildMrf(model, patch4x4Model, gradModel, config);
         InferenceEngine engine = InferenceEngineFactory.create(config, mrf);
         mrf.setPatch4x4Config(com.markovai.server.ai.Patch4x4FeedbackConfig.disabled());
         return mrf.evaluateAccuracy(testData, true, engine);
     }
 
     private double runSweepIteration(RowColumnDigitClassifier model, List<DigitImage> trainData,
-            List<DigitImage> testData, com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model, double adjScale,
+            List<DigitImage> testData, com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model,
+            com.markovai.server.ai.DigitGradientUnigramModel gradModel, double adjScale,
             double eta) throws Exception {
 
         // Build Fresh MRF
         FactorGraphBuilder.ConfigRoot configRoot = loadMrfConfig();
-        MarkovFieldDigitClassifier mrf = buildMrf(model, patch4x4Model, configRoot);
+        MarkovFieldDigitClassifier mrf = buildMrf(model, patch4x4Model, gradModel, configRoot);
         InferenceEngine engine = InferenceEngineFactory.create(configRoot, mrf);
 
         // Get Base Config (so we respect file settings for other params)
@@ -1439,12 +1492,13 @@ public class MarkovTrainingService {
     }
 
     private MarkovFieldDigitClassifier buildMrf(RowColumnDigitClassifier model,
-            com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model, FactorGraphBuilder.ConfigRoot configRoot)
+            com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model,
+            com.markovai.server.ai.DigitGradientUnigramModel gradModel, FactorGraphBuilder.ConfigRoot configRoot)
             throws Exception {
         FactorGraphBuilder builder = new FactorGraphBuilder(
                 model.getRowModel(), model.getColumnModel(), model.getPatchModel(),
                 model.getRowExtractor(), model.getColumnExtractor(), model.getPatchExtractor(),
-                patch4x4Model, DataPathResolver.resolveDbPath());
+                patch4x4Model, gradModel, DataPathResolver.resolveDbPath());
 
         Map<String, DigitFactorNode> nodes = builder.build(getClass().getResourceAsStream("/mrf_config.json"));
         DigitFactorNode root = nodes.get(configRoot.rootNodeId);
@@ -1541,7 +1595,8 @@ public class MarkovTrainingService {
     }
 
     private void runNetworkAttractorSanityCheck(RowColumnDigitClassifier model, List<DigitImage> testData,
-            com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model) {
+            com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model,
+            com.markovai.server.ai.DigitGradientUnigramModel gradModel) {
         logger.info("============================================================");
         logger.info("STARTING NETWORK ATTRACTOR SANITY CHECK");
         logger.info("============================================================");
@@ -1565,7 +1620,7 @@ public class MarkovTrainingService {
                 configRoot.network.debugStats = true;
             }
 
-            MarkovFieldDigitClassifier mrf = buildMrf(model, patch4x4Model, configRoot);
+            MarkovFieldDigitClassifier mrf = buildMrf(model, patch4x4Model, gradModel, configRoot);
 
             // Force disable all feedback so we test PURE attractor inference on static
             // graph
@@ -1636,7 +1691,8 @@ public class MarkovTrainingService {
     }
 
     private void runNetworkConvergenceSweep(RowColumnDigitClassifier model, List<DigitImage> testData,
-            com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model) {
+            com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model,
+            com.markovai.server.ai.DigitGradientUnigramModel gradModel) {
         logger.info("============================================================");
         logger.info("STARTING NETWORK CONVERGENCE TUNING SWEEP");
         logger.info("============================================================");
@@ -1669,7 +1725,7 @@ public class MarkovTrainingService {
             baseConfig.network.debugStats = false; // Disable debug logs to reduce noise
 
             // Disable feedback learning to ensure stability
-            MarkovFieldDigitClassifier mrf = buildMrf(model, patch4x4Model, baseConfig);
+            MarkovFieldDigitClassifier mrf = buildMrf(model, patch4x4Model, gradModel, baseConfig);
             mrf.setRowFeedbackConfig(com.markovai.server.ai.Patch4x4FeedbackConfig.disabled());
             mrf.setColumnFeedbackConfig(com.markovai.server.ai.Patch4x4FeedbackConfig.disabled());
             mrf.setPatch4x4Config(com.markovai.server.ai.Patch4x4FeedbackConfig.disabled());
