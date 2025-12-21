@@ -131,7 +131,9 @@
             "numBins": 8,
             "flatBin": 8,
             "magThreshold": 50.0,
-            "smoothingAlpha": 1.0
+            "smoothingAlpha": 1.0,
+            "usePerStepAverage": true,
+            "meanCenterScores": true
         },
         {
             "id": "root",

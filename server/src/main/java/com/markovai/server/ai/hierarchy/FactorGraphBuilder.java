@@ -74,6 +74,8 @@ public class FactorGraphBuilder {
         public Integer flatBin;
         public Double magThreshold;
         public Double smoothingAlpha;
+        public Boolean usePerStepAverage;
+        public Boolean meanCenterScores;
     }
 
     public static class NetworkConfig {
@@ -201,7 +203,9 @@ public class FactorGraphBuilder {
                             logger.warn("Gradient Model not injected, cannot create GradientOrientationNode");
                             break;
                         }
-                        node = new GradientOrientationNode(cn.id, gradModel);
+                        boolean usePerStepAvg = Boolean.TRUE.equals(cn.usePerStepAverage);
+                        boolean meanCenter = Boolean.TRUE.equals(cn.meanCenterScores);
+                        node = new GradientOrientationNode(cn.id, gradModel, usePerStepAvg, meanCenter);
                         break;
                     case "WeightedSumNode":
                         // Children wired later
