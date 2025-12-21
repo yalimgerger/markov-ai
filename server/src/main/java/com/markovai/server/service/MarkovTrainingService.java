@@ -24,6 +24,8 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
+import java.io.ByteArrayInputStream;
 
 @Service
 public class MarkovTrainingService {
@@ -145,6 +147,10 @@ public class MarkovTrainingService {
                                     && "true".equalsIgnoreCase(
                                             appArgs.getOptionValues("verifyFeedbackNoLeakageAdaptSweep").get(0)));
 
+                    boolean runGradSweep = "true".equalsIgnoreCase(System.getProperty("verifyGradientSweep"))
+                            || (appArgs != null && appArgs.containsOption("verifyGradientSweep")
+                                    && "true".equalsIgnoreCase(appArgs.getOptionValues("verifyGradientSweep").get(0)));
+
                     boolean runNetworkSanity = "true"
                             .equalsIgnoreCase(System.getProperty("networkAttractorSanity"))
                             || (appArgs != null && appArgs.containsOption("networkAttractorSanity")
@@ -160,6 +166,8 @@ public class MarkovTrainingService {
                         runNetworkConvergenceSweep(model, testingData, patch4x4Model, gradModel);
                     } else if (runAdaptSweep) {
                         runAdaptationSizeSweep(model, trainingData, testingData, patch4x4Model, gradModel);
+                    } else if (runGradSweep) {
+                        runGradientWeightSweep(model, trainingData, testingData, patch4x4Model, gradModel);
                     } else if (runSweep) {
                         runFeedbackSweep(model, trainingData, testingData, patch4x4Model, gradModel);
                     } else if (runMultiSeed) {
@@ -533,7 +541,7 @@ public class MarkovTrainingService {
                         useColFeedback);
                 LeakageFreeResult result = performLeakageFreeProtocol(model, testData, trainData, patch4x4Model,
                         gradModel, seed,
-                        false, useRowFeedback, useColFeedback, 2000, null);
+                        false, useRowFeedback, useColFeedback, 2000, null, null);
                 results.add(result);
                 logger.info("Seed={}  Baseline={}  Frozen={}  Delta={}",
                         seed, String.format("%.4f", result.baselineAcc), String.format("%.4f", result.frozenAcc),
@@ -614,7 +622,7 @@ public class MarkovTrainingService {
         try {
             performLeakageFreeProtocol(model, testData, trainData, patch4x4Model, gradModel, 12345L, true,
                     useRowFeedback,
-                    useColFeedback, 2000, null);
+                    useColFeedback, 2000, null, null);
 
             logger.info("============================================================");
             logger.info("VERIFICATION PROTOCOL COMPLETE");
@@ -635,7 +643,8 @@ public class MarkovTrainingService {
             List<DigitImage> trainData, com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model,
             com.markovai.server.ai.DigitGradientUnigramModel gradModel,
             long seed, boolean verbose, boolean useRowFeedback, boolean useColFeedback, int adaptSize,
-            Double knownBaseline)
+            Double knownBaseline,
+            Function<FactorGraphBuilder.ConfigRoot, FactorGraphBuilder.ConfigRoot> configModifier)
             throws Exception {
 
         // 1. Build MRF
@@ -645,10 +654,18 @@ public class MarkovTrainingService {
                 patch4x4Model, gradModel, DataPathResolver.resolveDbPath());
 
         ObjectMapper mapper = new ObjectMapper();
-        FactorGraphBuilder.ConfigRoot configRoot = mapper.readValue(
+        FactorGraphBuilder.ConfigRoot initialConfig = mapper.readValue(
                 getClass().getResourceAsStream("/mrf_config.json"),
                 FactorGraphBuilder.ConfigRoot.class);
-        Map<String, DigitFactorNode> nodes = builder.build(getClass().getResourceAsStream("/mrf_config.json"));
+
+        // Apply config modifier if present
+        FactorGraphBuilder.ConfigRoot configRoot = (configModifier != null)
+                ? configModifier.apply(initialConfig)
+                : initialConfig;
+
+        // Build using the specific (potentially modified) config
+        byte[] jsonBytes = mapper.writeValueAsBytes(configRoot);
+        Map<String, DigitFactorNode> nodes = builder.build(new ByteArrayInputStream(jsonBytes));
         DigitFactorNode root = nodes.get(configRoot.rootNodeId);
         if (root == null)
             throw new RuntimeException("Root node not found");
@@ -1292,7 +1309,7 @@ public class MarkovTrainingService {
                                 try {
                                     return performLeakageFreeProtocol(model, testData, cleanTrainData, patch4x4Model,
                                             gradModel,
-                                            seed, false, useRow, useCol, adaptSize, baselineAcc);
+                                            seed, false, useRow, useCol, adaptSize, baselineAcc, null);
                                 } catch (Exception e) {
                                     throw new RuntimeException(e);
                                 }
@@ -1824,6 +1841,117 @@ public class MarkovTrainingService {
 
         } catch (Exception e) {
             logger.error("Network sweep failed", e);
+        }
+    }
+
+    private void runGradientWeightSweep(RowColumnDigitClassifier model, List<DigitImage> trainData,
+            List<DigitImage> testData,
+            com.markovai.server.ai.DigitPatch4x4UnigramModel patch4x4Model,
+            com.markovai.server.ai.DigitGradientUnigramModel gradModel) {
+
+        logger.info("============================================================");
+        logger.info("STARTING GRADIENT WEIGHT SWEEP (Leakage-Free)");
+        logger.info("============================================================");
+
+        double[] weights = new double[] { 0.00, 0.01, 0.02, 0.03, 0.05, 0.08, 0.10, 0.12, 0.15 };
+        long[] seeds = new long[] { 12345L, 22222L, 33333L, 44444L, 55555L };
+        int adaptSize = 2000;
+
+        // Header for results
+        List<String> resultRows = new ArrayList<>();
+        resultRows.add("gradWeight,meanPhaseAAcc,meanPhaseCAcc,meanDelta,stdDelta,minDelta,maxDelta");
+
+        for (double w : weights) {
+            List<LeakageFreeResult> seedResults = new ArrayList<>();
+            logger.info("Sweping gradWeight={}", String.format("%.2f", w));
+
+            for (long seed : seeds) {
+                try {
+                    LeakageFreeResult res = performLeakageFreeProtocol(model, testData, trainData, patch4x4Model,
+                            gradModel,
+                            seed, false, true, true, adaptSize, null, (cfg) -> {
+                                // 1. Ensure Gradient Config
+                                FactorGraphBuilder.ConfigNode gradNode = null;
+                                for (FactorGraphBuilder.ConfigNode n : cfg.nodes) {
+                                    if (n.id.equals("grad")) {
+                                        gradNode = n;
+                                        break;
+                                    }
+                                }
+                                if (gradNode == null) {
+                                    // Should not happen if mrf_config.json is correct
+                                } else {
+                                    gradNode.usePerStepAverage = true;
+                                    gradNode.meanCenterScores = true;
+                                }
+
+                                // 2. Ensure ObserverWeights Disabled
+                                if (cfg.learning != null && cfg.learning.observerWeights != null) {
+                                    cfg.learning.observerWeights.enabled = false;
+                                    cfg.learning.observerWeights.standardizeObserverScores = false;
+                                }
+
+                                // 3. Set Weight
+                                // Find root WeightedSumNode
+                                for (FactorGraphBuilder.ConfigNode n : cfg.nodes) {
+                                    if (n.type.equals("WeightedSumNode") && n.weights != null) {
+                                        n.weights.put("grad", w);
+                                    }
+                                }
+                                return cfg;
+                            });
+                    seedResults.add(res);
+                } catch (Exception e) {
+                    logger.error("Failed sweep for w={} s={}", w, seed, e);
+                }
+            }
+
+            // Stats
+            double sumA = 0, sumC = 0, sumD = 0;
+            double minD = Double.MAX_VALUE, maxD = -Double.MAX_VALUE;
+            for (LeakageFreeResult r : seedResults) {
+                sumA += r.baselineAcc;
+                sumC += r.frozenAcc;
+                double d = r.getDelta();
+                sumD += d;
+                if (d < minD)
+                    minD = d;
+                if (d > maxD)
+                    maxD = d;
+            }
+            double meanA = sumA / seedResults.size();
+            double meanC = sumC / seedResults.size();
+            double meanD = sumD / seedResults.size();
+
+            double varD = 0;
+            for (LeakageFreeResult r : seedResults) {
+                varD += Math.pow(r.getDelta() - meanD, 2);
+            }
+            double stdD = (seedResults.size() > 1) ? Math.sqrt(varD / (seedResults.size() - 1)) : 0.0;
+
+            String row = String.format("%.2f,%.4f,%.4f,%+.4f,%.4f,%+.4f,%+.4f",
+                    w, meanA, meanC, meanD, stdD, minD, maxD);
+            resultRows.add(row);
+            logger.info("Result for w={}: {}", w, row);
+        }
+
+        // Final Table
+        System.out.println("\n=== GRADIENT WEIGHT SWEEP RESULTS ===");
+        // Print header
+        System.out.println(resultRows.get(0));
+        // Sort by meanPhaseCAcc (index 2) descending
+        // Skip header
+        resultRows.stream().skip(1).sorted((s1, s2) -> {
+            double c1 = Double.parseDouble(s1.split(",")[2]);
+            double c2 = Double.parseDouble(s2.split(",")[2]);
+            return Double.compare(c2, c1);
+        }).forEach(System.out::println);
+
+        System.out.println("=====================================");
+
+        if (context != null) {
+            context.close();
+            System.exit(0);
         }
     }
 }
