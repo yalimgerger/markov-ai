@@ -1853,8 +1853,31 @@ public class MarkovTrainingService {
         logger.info("STARTING GRADIENT WEIGHT SWEEP (Leakage-Free)");
         logger.info("============================================================");
 
-        double[] weights = new double[] { 0.00, 0.01, 0.02, 0.03, 0.05, 0.08, 0.10, 0.12, 0.15 };
-        long[] seeds = new long[] { 12345L, 22222L, 33333L, 44444L, 55555L };
+        // Parse weights
+        String weightsStr = System.getProperty("gradSweepWeights");
+        double[] weights;
+        if (weightsStr != null && !weightsStr.isEmpty()) {
+            String[] parts = weightsStr.split(",");
+            weights = new double[parts.length];
+            for (int i = 0; i < parts.length; i++) {
+                weights[i] = Double.parseDouble(parts[i].trim());
+            }
+        } else {
+            weights = new double[] { 0.00, 0.01, 0.02, 0.03, 0.05, 0.08, 0.10, 0.12, 0.15 };
+        }
+
+        // Parse seeds
+        String seedsStr = System.getProperty("gradSweepSeeds");
+        long[] seeds;
+        if (seedsStr != null && !seedsStr.isEmpty()) {
+            String[] parts = seedsStr.split(",");
+            seeds = new long[parts.length];
+            for (int i = 0; i < parts.length; i++) {
+                seeds[i] = Long.parseLong(parts[i].trim());
+            }
+        } else {
+            seeds = new long[] { 12345L, 22222L, 33333L, 44444L, 55555L };
+        }
         int adaptSize = 2000;
 
         // Header for results
