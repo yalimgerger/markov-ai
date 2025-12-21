@@ -82,7 +82,6 @@ public class MarkovTrainingService {
                     patch4x4Model.trainOnImage(img.label, binary);
                 }
                 patch4x4Model.finalizeProbabilities();
-                patch4x4Model.finalizeProbabilities();
                 logger.info("4x4 Patch Model Trained.");
 
                 // Train Gradient Model

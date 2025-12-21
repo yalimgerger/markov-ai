@@ -195,8 +195,7 @@ public class FactorGraphBuilder {
                                 : Patch4x4FeedbackConfig.disabled();
                         // Note: Bypassing CachedMarkovChainEvaluator for online learning node
                         node = new Patch4x4Node(cn.id, patch4x4Model, lambda, feedback);
-                        // Note: Bypassing CachedMarkovChainEvaluator for online learning node
-                        node = new Patch4x4Node(cn.id, patch4x4Model, lambda, feedback);
+
                         break;
                     case "gradient_orientation_unigram":
                         if (gradModel == null) {

@@ -110,8 +110,8 @@ public class WeightedSumNode implements DigitFactorNode {
                     bestD = d;
                 }
             }
-            logger.trace("WeightedSumNode {} combined {} children. Best Digit: {} ({:.2f})", id, children.size(), bestD,
-                    bestL);
+            logger.trace("WeightedSumNode {} combined {} children. Best Digit: {} ({})", id, children.size(), bestD,
+                    String.format("%.2f", bestL));
         }
 
         return new NodeResult(totalLogL);
